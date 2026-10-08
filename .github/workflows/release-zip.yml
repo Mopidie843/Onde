@@ -1,0 +1,49 @@
+# Publie le zip d'Onde (onde-tout.zip) sur la page « Releases » : c'est ce que la mise à jour automatique
+# (Réglages → Mise à jour, source « Mopidie843/onde ») télécharge, vérifie (SHA-256) et installe.
+#
+# Pour sortir une mise à jour : change VERSION dans onde/config.py, envoie sur main. Ce workflow lance les tests,
+# puis crée la release « vX.Y.Z » avec le zip — sauf si cette version existe déjà. (À la main : onglet Actions.)
+name: Zip de mise à jour
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Tests
+        run: python -m pip install -r requirements-dev.txt && python -m pytest -q
+      - name: Version
+        id: v
+        run: |
+          VERSION=$(python -c "import re,pathlib; print(re.search(r'^VERSION\s*=\s*\"([^\"]+)\"', pathlib.Path('onde/config.py').read_text(), re.M).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Cette version est-elle déjà publiée ?
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then echo "yes=true" >> "$GITHUB_OUTPUT"; else echo "yes=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Zip (dossier « onde/ » à la racine, comme l'attend la mise à jour)
+        if: steps.exists.outputs.yes == 'false'
+        run: |
+          git archive --format=zip --prefix=onde/ -o onde-tout.zip HEAD
+          sha256sum onde-tout.zip | cut -d' ' -f1 > onde-tout.zip.sha256
+      - name: Publier
+        if: steps.exists.outputs.yes == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" onde-tout.zip onde-tout.zip.sha256 \
+            --title "Onde ${{ steps.v.outputs.version }}" \
+            --notes "Mise à jour d'Onde ${{ steps.v.outputs.version }} (zip pour la mise à jour automatique ou à la main : Réglages → Mise à jour)."

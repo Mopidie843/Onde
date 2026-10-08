@@ -3,8 +3,8 @@ s'il existe une version plus récente et l'installe toute seule (code remplacé,
 redémarrage). L'appli Android suit : le serveur lui sert l'APK fourni avec la nouvelle version.
 
 Source des mises à jour (Réglages → Mise à jour, ou ONDE_UPDATE_SOURCE dans onde.env) :
-  * « pseudo/depot » : un dépôt GitHub. La dernière « release » doit contenir le zip d'Onde
-    (onde-tout.zip ou onde-x.y.z.zip). GitHub fournit l'empreinte SHA-256 du fichier : vérifiée.
+  * « pseudo/depot » : un dépôt GitHub. La release la plus récente qui contient le zip d'Onde
+    (onde-tout.zip ou onde-x.y.z.zip) fait foi ; les autres (Onde.exe, Onde.apk) sont ignorées. GitHub fournit l'empreinte SHA-256 du fichier : vérifiée.
   * https://…/onde.json : un petit fichier {"version": "1.3.0", "url": "https://…/onde.zip",
     "sha256": "…", "notes": "…"} (l'empreinte est obligatoire).
 Sans source, rien ne se passe (la mise à jour à la main, avec le zip, marche toujours).
@@ -47,20 +47,26 @@ def latest(src: str | None = None) -> dict | None:
     if not src:
         return None
     if re.fullmatch(r"[\w.-]+/[\w.-]+", src):
-        rel = net.get_json(f"https://api.github.com/repos/{src}/releases/latest",
-                           headers={"Accept": "application/vnd.github+json"}, deadline=20)
-        version = str(rel.get("tag_name") or rel.get("name") or "").lstrip("vV ")
-        assets = rel.get("assets") or []
-        zips = [a for a in assets if str(a.get("name", "")).lower().endswith(".zip") and "onde" in str(a.get("name", "")).lower()]
-        if not zips:
-            raise ValueError("La dernière release GitHub ne contient pas de zip d'Onde.")
-        a = zips[0]
-        sha = str(a.get("digest") or "").removeprefix("sha256:") or None
-        if not sha:  # fichier « onde-tout.zip.sha256 » à côté
-            side = next((x for x in assets if str(x.get("name", "")).lower() == str(a["name"]).lower() + ".sha256"), None)
-            if side:
-                sha = net.get_text(side["browser_download_url"], deadline=20).split()[0]
-        return {"version": version, "url": a["browser_download_url"], "sha256": sha, "notes": str(rel.get("body") or "")[:2000]}
+        # Le dépôt publie aussi d'autres « releases » (Onde.exe, Onde.apk) : « la dernière » n'est donc pas
+        # forcément celle du zip. On parcourt les récentes et on prend la plus récente qui en contient un.
+        rels = net.get_json(f"https://api.github.com/repos/{src}/releases?per_page=30",
+                            headers={"Accept": "application/vnd.github+json"}, deadline=20)
+        for rel in rels if isinstance(rels, list) else [rels]:
+            if rel.get("draft") or rel.get("prerelease"):
+                continue
+            assets = rel.get("assets") or []
+            zips = [a for a in assets if str(a.get("name", "")).lower().endswith(".zip") and "onde" in str(a.get("name", "")).lower()]
+            if not zips:
+                continue
+            a = zips[0]
+            version = str(rel.get("tag_name") or rel.get("name") or "").lstrip("vV ")
+            sha = str(a.get("digest") or "").removeprefix("sha256:") or None
+            if not sha:  # fichier « onde-tout.zip.sha256 » à côté
+                side = next((x for x in assets if str(x.get("name", "")).lower() == str(a["name"]).lower() + ".sha256"), None)
+                if side:
+                    sha = net.get_text(side["browser_download_url"], deadline=20).split()[0]
+            return {"version": version, "url": a["browser_download_url"], "sha256": sha, "notes": str(rel.get("body") or "")[:2000]}
+        raise ValueError("Aucune release GitHub ne contient de zip d'Onde.")
     if not src.startswith("https://"):
         raise ValueError("Source de mise à jour : « pseudo/dépôt » GitHub ou une adresse https://")
     m = net.get_json(src, deadline=20)

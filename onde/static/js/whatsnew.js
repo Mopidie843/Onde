@@ -3,6 +3,10 @@ import { esc, icon, storage } from "./util.js";
 import { openModal } from "./ui.js";
 
 const NEWS = {
+  "1.3.5": [
+    ["sparkles", "Ton année", "Ton bilan d'écoute façon « Wrapped » : un bouton sur la page Statistiques ouvre tes tops, tes records et tes habitudes en diapositives."],
+    ["refresh", "Mise à jour automatique plus fiable", "Onde retrouve le bon zip même si le dépôt publie aussi Onde.exe et Onde.apk."],
+  ],
   "1.3.3": [
     ["lock", "Mot de passe oublié", "Le bouton de la page de connexion prévient l'admin par notification ; il crée un lien depuis le Tableau de bord."],
   ],

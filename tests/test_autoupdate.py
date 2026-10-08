@@ -43,10 +43,11 @@ def test_github_release_installs(install, http):
     root, restarts = install
     data = _zip()
     settings.update({"update_source": "moi/onde"})
-    http.routes["https://api.github.com/repos/moi/onde/releases/latest"] = httpx.Response(200, json={
-        "tag_name": "v9.9.9", "body": "nouveautés",
-        "assets": [{"name": "onde-tout.zip", "browser_download_url": "https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip",
-                    "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "onde-77", "assets": [{"name": "Onde.exe", "browser_download_url": "https://github.com/moi/onde/releases/download/onde-77/Onde.exe"}]},  # (release de l'exe, plus récente)
+        {"tag_name": "v9.9.9", "body": "nouveautés",
+         "assets": [{"name": "onde-tout.zip", "browser_download_url": "https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip",
+                     "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]}])
     http.routes["https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip"] = httpx.Response(200, content=data)
     st = autoupdate.check()
     assert st["error"] is None and st["installed"]["to"] == "9.9.9"
@@ -56,9 +57,9 @@ def test_github_release_installs(install, http):
 def test_bad_digest_refused(install, http):
     root, restarts = install
     settings.update({"update_source": "moi/onde"})
-    http.routes["https://api.github.com/repos/moi/onde/releases/latest"] = httpx.Response(200, json={
-        "tag_name": "9.9.9", "assets": [{"name": "onde.zip", "browser_download_url": "https://x.example/onde.zip",
-                                         "digest": "sha256:" + "0" * 64}]})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "9.9.9", "assets": [{"name": "onde.zip", "browser_download_url": "https://x.example/onde.zip",
+                                          "digest": "sha256:" + "0" * 64}]}])
     http.routes["https://x.example/onde.zip"] = httpx.Response(200, content=_zip())
     st = autoupdate.check()
     assert "Empreinte" in st["error"] and (root / "onde" / "main.py").read_text() == "old" and not restarts
@@ -102,3 +103,10 @@ def test_terms_accept(fresh_db):
     users._cache.clear()
     assert c.get("/api/me").json()["terms"] is True
     assert "partager" in terms.text().lower()
+
+
+def test_no_zip_in_any_release(install, http):
+    settings.update({"update_source": "moi/onde"})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "onde-1", "assets": [{"name": "Onde.exe", "browser_download_url": "https://x.example/Onde.exe"}]}])
+    assert "zip" in autoupdate.check()["error"]

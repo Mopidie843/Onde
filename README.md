@@ -488,11 +488,16 @@ seulement), les modules et ffmpeg. Désinstallation propre depuis « Application
 « Windows a protégé votre ordinateur » (installateur non signé) : « Informations complémentaires » → « Exécuter quand même ».
 
 **Mise à jour automatique** (Réglages → Mise à jour) : à chaque démarrage puis toutes les 12 h, en arrière-plan.
-Choisis la source : un dépôt GitHub (`pseudo/depot`, la dernière *release* doit contenir le zip d'Onde : GitHub
-fournit l'empreinte SHA-256, vérifiée) ou l'adresse d'un fichier `onde.json`
+Choisis la source : un dépôt GitHub (`pseudo/depot` ; la *release* la plus récente qui contient le zip d'Onde fait foi,
+les releases Onde.exe / Onde.apk sont ignorées ; GitHub fournit l'empreinte SHA-256, vérifiée) ou l'adresse d'un fichier `onde.json`
 (`{"version": "1.3.1", "url": "https://…/onde.zip", "sha256": "…"}`). Le zip contient `android/Onde.apk` :
 le serveur le donne aux téléphones, et l'appli (1.5) propose toute seule sa mise à jour (Android demande
 confirmation ; il faut autoriser « installer des applis inconnues » pour Onde, une fois).
+
+**Sortir une mise à jour depuis GitHub** : augmente `VERSION` dans `onde/config.py` et envoie sur `main`. Le workflow
+« Zip de mise à jour » (`.github/workflows/release-zip.yml`) lance les tests puis publie la release `vX.Y.Z` avec
+`onde-tout.zip` (+ son `.sha256`). Dans Réglages → Mise à jour, mets `Mopidie843/onde` comme source : les
+installations le trouvent, vérifient l'empreinte et se mettent à jour toutes seules (Onde.exe excepté : il se remplace à la main).
 
 **Conditions d'utilisation** (`CONDITIONS.txt`, page `/conditions`) : usage privé, rien partager ni revendre,
 chacun responsable de ce qu'il importe, accès coupé en cas d'abus. Acceptées à l'installation, à la création

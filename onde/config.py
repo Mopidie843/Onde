@@ -60,7 +60,7 @@ def _flag(name: str, default: bool) -> bool:
 
 
 APP_NAME = "Onde"
-VERSION = "1.3.4"
+VERSION = "1.3.5"
 
 MUSIC_DIR = _path("ONDE_MUSIC_DIR", _default_music_dir())
 EXTRA_DIRS = [

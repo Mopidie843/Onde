@@ -110,3 +110,27 @@ def test_no_zip_in_any_release(install, http):
     http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
         {"tag_name": "onde-1", "assets": [{"name": "Onde.exe", "browser_download_url": "https://x.example/Onde.exe"}]}])
     assert "zip" in autoupdate.check()["error"]
+
+
+@pytest.mark.parametrize("typed", [
+    "Mopidie843/Onde", "https://github.com/Mopidie843/Onde", "https://github.com/Mopidie843/Onde/", "github.com/Mopidie843/Onde.git",
+    "https://github.com/Mopidie843/Onde/releases/latest", "https://api.github.com/repos/Mopidie843/Onde/releases/latest",
+])
+def test_github_source_accepts_urls(typed):
+    assert autoupdate.normalize_source(typed) == "Mopidie843/Onde"
+
+
+def test_manifest_url_is_left_alone():
+    url = "https://maj.example/onde.json"
+    assert autoupdate.normalize_source(url) == url
+
+
+def test_github_url_source_installs(install, http):
+    root, restarts = install
+    data = _zip()
+    settings.update({"update_source": "https://github.com/moi/onde"})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "v9.9.9", "assets": [{"name": "onde-tout.zip", "browser_download_url": "https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip",
+                                          "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]}])
+    http.routes["https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip"] = httpx.Response(200, content=data)
+    assert autoupdate.check()["installed"]["to"] == "9.9.9"

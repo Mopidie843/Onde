@@ -33,6 +33,18 @@ def source() -> str:
     return (str(settings.get("update_source") or "").strip() or os.environ.get("ONDE_UPDATE_SOURCE", "").strip())
 
 
+_GITHUB_URL = re.compile(r"^(?:https?://)?(?:www\.|api\.)?github\.com/(?:repos/)?([\w.-]+)/([\w.-]+?)(?:\.git)?(?:/.*)?$", re.I)
+
+
+def normalize_source(src: str) -> str:
+    """« https://github.com/pseudo/depot », « …/releases/latest », « pseudo/depot.git »… → « pseudo/depot »."""
+    src = (src or "").strip()
+    m = _GITHUB_URL.match(src)
+    if m and not src.lower().endswith(".json"):
+        return f"{m.group(1)}/{m.group(2)}"
+    return re.sub(r"\.git$", "", src) if re.fullmatch(r"[\w.-]+/[\w.-]+", src) else src
+
+
 def vtuple(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", v or "")[:4]) or (0,)
 
@@ -43,7 +55,7 @@ def newer(candidate: str, current: str = config.VERSION) -> bool:
 
 def latest(src: str | None = None) -> dict | None:
     """{"version", "url", "sha256", "notes"} de la dernière version publiée (ou None sans source)."""
-    src = (src if src is not None else source()).strip()
+    src = normalize_source(src if src is not None else source())
     if not src:
         return None
     if re.fullmatch(r"[\w.-]+/[\w.-]+", src):
@@ -68,10 +80,11 @@ def latest(src: str | None = None) -> dict | None:
             return {"version": version, "url": a["browser_download_url"], "sha256": sha, "notes": str(rel.get("body") or "")[:2000]}
         raise ValueError("Aucune release GitHub ne contient de zip d'Onde.")
     if not src.startswith("https://"):
-        raise ValueError("Source de mise à jour : « pseudo/dépôt » GitHub ou une adresse https://")
+        raise ValueError("Source de mise à jour : « pseudo/dépôt » GitHub (ex. Mopidie843/Onde) ou l'adresse https:// d'un fichier onde.json")
     m = net.get_json(src, deadline=20)
     if not isinstance(m, dict) or not m.get("version") or not str(m.get("url", "")).startswith("https://"):
-        raise ValueError("Fichier de mise à jour invalide (version et url https:// obligatoires).")
+        raise ValueError("Fichier de mise à jour invalide (il faut « version » et « url » https://). "
+                         "Pour un dépôt GitHub, mets simplement « pseudo/dépôt » (ex. Mopidie843/Onde).")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", str(m.get("sha256") or "")):
         raise ValueError("Fichier de mise à jour sans empreinte sha256 : refusé (sécurité).")
     return {"version": str(m["version"]), "url": m["url"], "sha256": m["sha256"].lower(), "notes": str(m.get("notes") or "")[:2000]}

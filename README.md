@@ -238,7 +238,14 @@ onde/
 ├── requirements.txt    ← FastAPI, Uvicorn (uvloop + httptools), Mutagen, Pillow, httpx
 ├── tests/              ← tests automatiques :  pip install -r requirements-dev.txt  puis  python -m pytest
 └── onde/
-    ├── main.py         ← API HTTP (streaming avec Range, upload en flux, zip en flux)
+    ├── main.py         ← application, connexion, bibliothèque, titres, lecture (streaming avec Range, zip en flux)
+    ├── web.py          ← outils partagés par les routes (réponse JSON rapide, erreurs, lecture d'un titre)
+    ├── routes_playlists.py   ← playlists (intelligentes, pistes, import/export M3U, pochette, zip)
+    ├── routes_import.py      ← import (envoi direct, lien, playlist en ligne)
+    ├── routes_maintenance.py ← rescan, doublons, qualité, export de la bibliothèque, modifs en lot
+    ├── routes_pi.py          ← mode enceinte (lecture sur le Pi)
+    ├── routes_sync.py        ← lecture synchronisée entre appareils
+    ├── stats.py        ← statistiques d'écoute et bilan de l'année (« Ton année »)
     ├── library.py      ← scan incrémental, tags ID3/MP4/FLAC/Vorbis, import, pochettes
     ├── covers.py       ← miniatures WebP, couleur dominante, recherche en ligne
     ├── net.py          ← client web partagé (httpx) : délais stricts, taille plafonnée, nouvel essai
@@ -453,6 +460,14 @@ Réglages → Mon profil → *Choisir un mot de passe* active les profils (pseud
   (lien `onde://join`) : l'appli s'ouvre directement sur la création du compte, avec la bonne adresse.
 - Réglages → Mon profil → « Se déconnecter » ramène à l'écran de compte de l'appli (pour changer de compte).
 - La session vaut pour l'adresse de la maison et l'adresse à distance ; notifications et lecture en fond suivent le compte.
+
+## Ton année (bilan façon « Wrapped »)
+
+Sur la page **Statistiques**, le bouton **Ton année** ouvre ton bilan en diapositives plein écran : temps d'écoute,
+artiste, titre et album de l'année, ton moment de la journée, mois et jour records, série de jours d'affilée,
+nouveaux artistes découverts. Touche l'écran (ou flèches du clavier) pour avancer, Échap pour fermer ; un sélecteur
+permet de revoir les années précédentes, et « Rejouer mon top » lance tes 5 titres préférés. Le bilan est propre à
+chaque profil. (API : `GET /api/wrapped?year=2025`.)
 
 ## Nouveautés 1.3.3
 

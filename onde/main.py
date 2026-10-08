@@ -13,7 +13,6 @@ import os
 import re
 import secrets
 import socket
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -30,8 +29,15 @@ from starlette.staticfiles import StaticFiles
 
 from . import api_models as M
 from . import asks, autoupdate, dashboard, quota, share, terms
-from . import align, backup, clean, jam, updater, first_run, follow, users, config, covers, db, devlog, discover, downloader, library, lyrics, net, netinfo, notify, remote, restart, settings, smart, stats, tls, transcode, tidy
+from . import align, backup, clean, jam, updater, first_run, follow, users, config, covers, db, devlog, discover, library, lyrics, net, netinfo, notify, remote, restart, settings, stats, tls, transcode, tidy
 from .pi_player import player
+from .routes_import import router as import_router
+from .routes_maintenance import router as maintenance_router
+from .routes_pi import router as pi_router
+from .routes_playlists import _add_to_playlist
+from .routes_playlists import router as playlists_router
+from .routes_sync import router as sync_router
+from .web import STREAMS_CLOSING, J, _404, _cover_from_request, _disposition, _flag, _playlist, _read_limited, _reindex, _stats, _track_row, shared
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("onde")
@@ -41,18 +47,15 @@ devlog.install()  # journal en mémoire pour la console développeur (F7)
 # --------------------------------------------------------------------------- #
 # Application
 # --------------------------------------------------------------------------- #
-_app_loop: asyncio.AbstractEventLoop | None = None
-_STREAMS_CLOSING = threading.Event()  # arrêt en cours : les flux en direct (SSE) se terminent
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _app_loop
     backup.apply_pending_restore()  # (restauration demandée avant le redémarrage)
     db.init()
-    _app_loop = asyncio.get_running_loop()
+    shared.loop = asyncio.get_running_loop()
     devlog.attach_uvicorn()
-    player.attach_loop(_app_loop)
+    player.attach_loop(shared.loop)
     library.start_background()
     first_run.run()  # playlist de départ, en arrière-plan (une seule fois)
     follow.start_background()  # nouveautés des artistes suivis
@@ -593,67 +596,6 @@ async def reset_password(token: str, request: Request):
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-class J(Response):
-    """JSON rapide : évite jsonable_encoder de FastAPI (beaucoup plus lent sur les grosses listes)."""
-    media_type = "application/json"
-
-    def render(self, content) -> bytes:
-        return json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-
-def _404(what: str = "Introuvable"):
-    raise HTTPException(status_code=404, detail=what)
-
-
-def _disposition(filename: str) -> str:
-    ascii_name = filename.encode("ascii", "ignore").decode() or "onde"
-    ascii_name = ascii_name.replace('"', "")
-    return f"attachment; filename=\"{ascii_name}\"; filename*=utf-8''{urllib.parse.quote(filename)}"
-
-
-def _stats() -> dict:
-    r = db.q1("SELECT COUNT(*) n, COALESCE(SUM(size),0) size, COALESCE(SUM(duration),0) dur FROM tracks")
-    albums = db.q1("SELECT COUNT(*) n FROM albums WHERE name<>?", config.SINGLES)["n"]
-    artists = db.q1("SELECT COUNT(DISTINCT artist COLLATE NOCASE) n FROM tracks")["n"]
-    liked = db.q1("SELECT COUNT(*) n FROM likes WHERE user_id=onde_uid()")["n"]
-    return {"tracks": r["n"], "size": r["size"], "duration": round(r["dur"]), "albums": albums,
-            "artists": artists, "liked": liked}
-
-
-async def _read_limited(request: Request, limit: int) -> bytes:
-    data = bytearray()
-    async for chunk in request.stream():
-        data += chunk
-        if len(data) > limit:
-            raise HTTPException(413, "Fichier trop volumineux")
-    return bytes(data)
-
-
-async def _cover_from_request(request: Request) -> str:
-    """Accepte soit une image brute (image/*), soit du JSON {"url": "..."}."""
-    ctype = request.headers.get("content-type", "")
-    body = await _read_limited(request, 25_000_000)
-    if ctype.startswith("application/json"):
-        url = (json.loads(body or b"{}").get("url") or "").strip()
-        if not url:
-            raise HTTPException(400, "URL manquante")
-        try:
-            raw = await run_in_threadpool(covers.fetch_image, url)
-        except Exception as exc:
-            raise HTTPException(400, f"Image inaccessible : {exc}")
-    else:
-        raw = body
-    cid = await run_in_threadpool(covers.store_cover, raw)
-    if not cid:
-        raise HTTPException(400, "Ce fichier n'est pas une image valide")
-    return cid
-
-
-def _flag(request: Request, name: str, default: bool) -> bool:
-    v = request.query_params.get(name)
-    return default if v is None else v not in ("0", "false", "no")
-
-
 # --------------------------------------------------------------------------- #
 # API — bibliothèque
 # --------------------------------------------------------------------------- #
@@ -701,7 +643,7 @@ async def notifications(after: str = "", wait: float = 0):
     admin = users.is_admin()
     while True:
         res = notify.feed(start, admin)
-        if res["events"] or res["reset"] or time.monotonic() >= deadline or _STREAMS_CLOSING.is_set():
+        if res["events"] or res["reset"] or time.monotonic() >= deadline or STREAMS_CLOSING.is_set():
             return J(res)
         await asyncio.sleep(0.7)
 
@@ -715,7 +657,7 @@ async def dev_logs(after: str = "", wait: float = 0, limit: int = 1000):
     limit = max(1, min(devlog.MAX_LOGS, limit))
     while True:
         res = devlog.logs(start, limit)
-        if res["items"] or res["reset"] or start is None or time.monotonic() >= deadline or _STREAMS_CLOSING.is_set():
+        if res["items"] or res["reset"] or start is None or time.monotonic() >= deadline or STREAMS_CLOSING.is_set():
             return J(res)
         await asyncio.sleep(0.5)
 
@@ -837,13 +779,6 @@ def tracks_by_ids(ids: str = ""):
     return J(M.tracks_by_ids(wanted))
 
 
-def _track_row(tid: int):
-    row = db.q1("SELECT * FROM tracks WHERE id=?", tid)
-    if not row:
-        _404("Titre introuvable")
-    return row
-
-
 @app.get("/api/tracks/{tid}")
 def get_track(tid: int):
     return M.track_by_id(tid) or _404()
@@ -863,21 +798,6 @@ def edit_track(tid: int, body: dict = Body(...)):
         lyrics.forget(tid)
     library.bump()
     return M.track_by_id(tid)
-
-
-def _reindex(tid: int, path: str, old_album) -> None:
-    meta = library.read_meta(path)
-    st = os.stat(path)
-    with db.tx():
-        library.upsert_track(path, st, meta, track_id=tid)
-        new = db.q1("SELECT a.* FROM tracks t JOIN albums a ON a.id=t.album_id WHERE t.id=?", tid)
-        if (old_album and new and new["id"] != old_album["id"] and old_album["cover_id"]
-                and (not new["cover_id"] or (old_album["cover_locked"] and not new["cover_locked"]))):
-            db.x("UPDATE albums SET cover_id=?, cover_locked=? WHERE id=?",
-                 old_album["cover_id"], old_album["cover_locked"], new["id"])
-            if old_album["cover_locked"]:
-                db.x("UPDATE tracks SET cover_id=? WHERE id=?", old_album["cover_id"], tid)
-        library.cleanup_albums()
 
 
 @app.delete("/api/tracks/{tid}")
@@ -1146,6 +1066,11 @@ def get_stats(days: int = 30):
     return J(stats.compute(max(0, min(days, 3650))))
 
 
+@app.get("/api/wrapped")
+def get_wrapped(year: int = 0):
+    return J(stats.wrapped(year or None))
+
+
 @app.get("/api/history")
 def get_history(limit: int = 100, before: float = 0):
     return J(stats.history(max(1, min(limit, 500)), before or None))
@@ -1301,13 +1226,6 @@ def unlike(tid: int):
 
 
 # ------------------------------------------------------------------ playlists
-def _playlist(pid: int) -> dict:
-    rows = M.playlist_summary(pid)
-    if not rows:
-        _404("Playlist introuvable")
-    return rows[0]
-
-
 @app.get("/api/playlists")
 def playlists():
     return M.playlist_summary()
@@ -1350,393 +1268,6 @@ def delete_playlist(pid: int):
     _playlist(pid)  # (seulement ses propres playlists)
     db.x("DELETE FROM playlists WHERE id=? AND owner_id=onde_uid()", pid)
     return {"ok": True}
-
-
-# --------------------------------------------------------------------------- #
-# Playlists intelligentes (règles)
-# --------------------------------------------------------------------------- #
-@app.get("/api/smart")
-def smart_list():
-    return J(smart.all_smart())
-
-
-@app.post("/api/smart")
-def smart_create(body: dict = Body(...)):
-    try:
-        return J(smart.create(body.get("name", ""), body.get("spec") or {}))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/api/smart/preview")
-def smart_preview(body: dict = Body(...)):
-    """Aperçu pendant l'édition : nombre de titres et premiers résultats."""
-    try:
-        items = smart.tracks(smart.validate(body.get("spec") or {}))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return J({"count": len(items), "dur": round(sum(t["dur"] for t in items)), "tracks": items[:30]})
-
-
-@app.get("/api/smart/{sid}")
-def smart_get(sid: int):
-    out = smart.get(sid)
-    if not out:
-        _404("Playlist intelligente introuvable")
-    return J(out)
-
-
-@app.patch("/api/smart/{sid}")
-def smart_update(sid: int, body: dict = Body(...)):
-    try:
-        out = smart.update(sid, body.get("name"), body.get("spec"))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    if not out:
-        _404("Playlist intelligente introuvable")
-    return J(out)
-
-
-@app.delete("/api/smart/{sid}")
-def smart_delete(sid: int):
-    if not smart.delete(sid):
-        _404("Playlist intelligente introuvable")
-    return {"ok": True}
-
-
-def _add_to_playlist(pid: int, ids: list[int], position: int | None = None) -> int:
-    now = time.time()
-    with db.tx():
-        valid = set()
-        for i in range(0, len(ids), 500):
-            chunk = ids[i:i + 500]
-            valid |= {r["id"] for r in db.q(f"SELECT id FROM tracks WHERE id IN ({','.join('?' * len(chunk))})", *chunk)}
-        keep = [t for t in ids if t in valid]
-        if position is None:
-            start = db.q1("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id=?", pid)["p"]
-        else:  # insertion à une position précise (annuler un retrait)
-            start = max(0, position)
-            db.x("UPDATE playlist_tracks SET position = position + ? WHERE playlist_id=? AND position >= ?",
-                 len(keep), pid, start)
-        rows = [(pid, tid, start + i, now) for i, tid in enumerate(keep)]
-        db.many("INSERT INTO playlist_tracks(playlist_id, track_id, position, added_at) VALUES(?,?,?,?)", rows)
-        db.x("UPDATE playlists SET updated_at=? WHERE id=?", now, pid)
-    return len(rows)
-
-
-@app.post("/api/playlists/{pid}/tracks")
-def add_tracks(pid: int, body: dict = Body(...)):
-    _playlist(pid)
-    ids = [int(i) for i in body.get("trackIds") or []]
-    if body.get("skipDuplicates", True):
-        present = {r["track_id"] for r in db.q("SELECT track_id FROM playlist_tracks WHERE playlist_id=?", pid)}
-        ids = [i for i in dict.fromkeys(ids) if i not in present]
-    pos = body.get("position")
-    added = _add_to_playlist(pid, ids, int(pos) if isinstance(pos, (int, float)) else None)
-    return {"added": added, "playlist": _playlist(pid)}
-
-
-@app.delete("/api/playlists/{pid}/entries/{eid}")
-def remove_entry(pid: int, eid: int):
-    _playlist(pid)
-    row = db.q1("SELECT track_id, (SELECT COUNT(*) FROM playlist_tracks p2 WHERE p2.playlist_id=pt.playlist_id "
-                "AND p2.position < pt.position) AS idx FROM playlist_tracks pt WHERE id=? AND playlist_id=?", eid, pid)
-    db.x("DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", eid, pid)
-    db.x("UPDATE playlists SET updated_at=? WHERE id=?", time.time(), pid)
-    return {"ok": True, "trackId": row["track_id"] if row else None, "index": row["idx"] if row else None}
-
-
-def _normalize_positions(pid: int) -> None:
-    rows = db.q("SELECT id FROM playlist_tracks WHERE playlist_id=? ORDER BY position, id", pid)
-    db.many("UPDATE playlist_tracks SET position=? WHERE id=?", [(i, r["id"]) for i, r in enumerate(rows)])
-
-
-@app.get("/api/playlists/{pid}/export")
-def playlist_export(pid: int):
-    p = _playlist(pid)
-    lines = ["#EXTM3U", f"#PLAYLIST:{p['name']}"]
-    for t in db.q("""SELECT t.path, t.title, t.artist, t.duration FROM playlist_tracks pt
-                     JOIN tracks t ON t.id=pt.track_id WHERE pt.playlist_id=? ORDER BY pt.position""", pid):
-        path = t["path"]
-        try:
-            path = os.path.relpath(path, config.MUSIC_DIR) if Path(path).is_relative_to(config.MUSIC_DIR) else path
-        except ValueError:
-            pass
-        lines += [f"#EXTINF:{round(t['duration'] or 0)},{t['artist']} - {t['title']}", path.replace(os.sep, "/")]
-    return Response("\n".join(lines) + "\n", media_type="audio/x-mpegurl",
-                    headers={"Content-Disposition": _disposition(library.safe_name(p["name"], "playlist") + ".m3u8")})
-
-
-def _parse_m3u(text: str) -> list[dict]:
-    entries, extinf = [], None
-    for line in text.splitlines():
-        line = line.strip().lstrip("\ufeff")
-        if not line:
-            continue
-        if line.upper().startswith("#EXTINF:"):
-            dur, _, label = line[8:].partition(",")
-            extinf = {"label": label.strip(), "dur": float(dur) if re.fullmatch(r"-?\d+(\.\d+)?", dur.strip()) else 0}
-        elif line.startswith("#"):
-            continue
-        else:
-            path = urllib.parse.unquote(line[7:]) if line.lower().startswith("file://") else line
-            entries.append({"path": path.replace("\\", "/"), **(extinf or {})})
-            extinf = None
-    return entries
-
-
-@app.post("/api/playlists/import")
-async def playlist_import(request: Request, name: str = ""):
-    raw = await _read_limited(request, 5_000_000)
-    text = raw.decode("utf-8", "replace")
-    if "\ufffd" in text:
-        text = raw.decode("latin-1")
-    entries = _parse_m3u(text)
-    if not entries:
-        raise HTTPException(400, "Aucune entrée trouvée dans cette playlist (.m3u / .m3u8)")
-
-    def work():
-        rows = db.q("SELECT id, path, title, artist FROM tracks")
-        by_path = {r["path"].replace(os.sep, "/"): r["id"] for r in rows}
-        music = str(config.MUSIC_DIR).replace(os.sep, "/").rstrip("/") + "/"
-        by_rel = {p[len(music):].lower(): i for p, i in by_path.items() if p.startswith(music)}
-        by_tail = {"/".join(p.lower().split("/")[-2:]): i for p, i in by_path.items()}
-        by_file = {p.lower().rsplit("/", 1)[-1]: i for p, i in by_path.items()}
-        by_label = {db.norm(f"{r['artist']} - {r['title']}"): r["id"] for r in rows}
-        by_title = {db.norm(r["title"]): r["id"] for r in rows}
-        ids, missing = [], []
-        for e in entries:
-            p = e["path"]
-            tid = (by_path.get(p) or by_rel.get(p.lower().lstrip("./")) or by_tail.get("/".join(p.lower().split("/")[-2:]))
-                   or by_file.get(p.lower().rsplit("/", 1)[-1]))
-            if not tid and e.get("label"):
-                tid = by_label.get(db.norm(e["label"])) or by_title.get(db.norm(e["label"].split(" - ", 1)[-1]))
-            if tid:
-                ids.append(tid)
-            else:
-                missing.append(e.get("label") or p.rsplit("/", 1)[-1])
-        title = name.strip() or next((l[10:].strip() for l in text.splitlines() if l.startswith("#PLAYLIST:")), "") or "Playlist importée"
-        now = time.time()
-        cur = db.x("INSERT INTO playlists(name, description, created_at, updated_at, owner_id) VALUES(?,?,?,?,onde_uid())",
-                   title[:120], "", now, now)
-        pid = cur.lastrowid
-        if ids:
-            _add_to_playlist(pid, ids)
-        return {"playlist": _playlist(pid), "matched": len(ids), "total": len(entries), "missing": missing[:30]}
-
-    return await run_in_threadpool(work)
-
-
-@app.put("/api/playlists/{pid}/order")
-def reorder(pid: int, body: dict = Body(...)):
-    _playlist(pid)
-    entries = [int(e) for e in body.get("entries") or []]
-    with db.tx():
-        db.many("UPDATE playlist_tracks SET position=? WHERE id=? AND playlist_id=?",
-                [(i, e, pid) for i, e in enumerate(entries)])
-        _normalize_positions(pid)
-        db.x("UPDATE playlists SET updated_at=? WHERE id=?", time.time(), pid)
-    return {"ok": True}
-
-
-@app.post("/api/playlists/{pid}/cover")
-async def playlist_cover(pid: int, request: Request):
-    await run_in_threadpool(_playlist, pid)
-    cid = await _cover_from_request(request)
-    await run_in_threadpool(db.x, "UPDATE playlists SET cover_id=? WHERE id=?", cid, pid)
-    return {"cover": cid, "color": M.color_of(cid)}
-
-
-@app.delete("/api/playlists/{pid}/cover")
-def playlist_cover_reset(pid: int):
-    _playlist(pid)
-    db.x("UPDATE playlists SET cover_id=NULL WHERE id=?", pid)
-    return _playlist(pid)
-
-
-@app.get("/api/playlists/{pid}/download")
-def playlist_zip(pid: int):
-    p = _playlist(pid)
-    files = []
-    for i, t in enumerate(db.q("""SELECT t.path, t.title, t.artist, t.ext FROM playlist_tracks pt
-                                  JOIN tracks t ON t.id=pt.track_id WHERE pt.playlist_id=? ORDER BY pt.position""", pid), 1):
-        files.append((t["path"], library.safe_name(f"{i:02d} - {t['artist']} - {t['title']}", f"{i:02d}") + t["ext"]))
-    return StreamingResponse(library.zip_stream(files), media_type="application/zip",
-                             headers={"Content-Disposition": _disposition(library.safe_name(p["name"], "playlist") + ".zip")})
-
-
-# --------------------------------------------------------------------------- #
-# Import (upload direct ou lien)
-# --------------------------------------------------------------------------- #
-@app.post("/api/upload")
-async def upload(request: Request):
-    name = urllib.parse.unquote(request.headers.get("x-filename") or "import.mp3")
-    name = os.path.basename(name.replace("\\", "/")) or "import.mp3"
-    ext = os.path.splitext(name)[1].lower()
-    if ext not in config.IMPORT_TYPES:
-        return JSONResponse({"status": "error", "name": name,
-                             "error": "Format non pris en charge"}, status_code=415)
-    limit = config.MAX_UPLOAD_MB * 1024 * 1024
-    try:
-        await run_in_threadpool(quota.check, None, int(request.headers.get("content-length") or 0))
-    except quota.QuotaFull as exc:
-        return JSONResponse({"status": "error", "name": name, "error": str(exc), "quota": True}, status_code=413)
-    tmp = library.new_incoming(ext)
-    size = 0
-    fh = await run_in_threadpool(open, tmp, "wb")
-    try:
-        buf = bytearray()
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > limit:
-                raise HTTPException(413, "Fichier trop volumineux")
-            buf += chunk
-            if len(buf) >= 1 << 20:
-                data = bytes(buf)
-                buf.clear()
-                await run_in_threadpool(fh.write, data)
-        if buf:
-            await run_in_threadpool(fh.write, bytes(buf))
-    except BaseException:
-        fh.close()
-        tmp.unlink(missing_ok=True)
-        raise
-    fh.close()
-    if size == 0:
-        tmp.unlink(missing_ok=True)
-        return JSONResponse({"status": "error", "name": name, "error": "Fichier vide"}, status_code=400)
-    res = await run_in_threadpool(library.ingest_any, tmp, name)
-    if res.get("status") == "added":
-        await run_in_threadpool(quota.mark, res)
-        await run_in_threadpool(users.log_activity, "upload", name)
-    elif res.get("status") == "error":
-        await run_in_threadpool(users.log_activity, "import_error", f"{name} : {res.get('error')}")
-    return J(res)
-
-
-_ctype_ext = {"audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a", "audio/x-m4a": ".m4a",
-              "audio/aac": ".aac", "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/ogg": ".ogg",
-              "audio/opus": ".opus", "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav",
-              "application/zip": ".zip", "application/x-zip-compressed": ".zip"}
-
-
-@app.get("/api/download-available")
-def download_available():
-    return {"available": downloader.available()}
-
-
-class _NotDirectAudio(Exception):
-    """Le lien n'est pas un fichier audio direct (probablement une page : YouTube, SoundCloud…)."""
-
-
-def _fetch_direct(url: str) -> dict:
-    """Télécharge un lien pointant DIRECTEMENT vers un fichier audio (pas une page de site).
-    En flux, sur le disque : pas de durée totale (gros FLAC, albums .zip), mais 20 s au plus sans
-    recevoir de données."""
-    started = False  # en-têtes reçus : une erreur ensuite est une coupure en plein téléchargement
-    tmp = None
-    try:
-        with net.stream(url, read_timeout=20.0) as resp:
-            started = True
-            name = ""
-            cd = resp.headers.get("Content-Disposition") or ""
-            m = re.search(r"filename\*=(?:UTF-8'')?([^;]+)|filename=\"?([^\";]+)", cd, re.I)
-            if m:
-                name = urllib.parse.unquote((m.group(1) or m.group(2) or "").strip())
-            if not name:
-                name = urllib.parse.unquote(os.path.basename(urllib.parse.urlparse(str(resp.url)).path))
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in config.IMPORT_TYPES:
-                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                ext = _ctype_ext.get(ctype, "")
-                if not ext:
-                    raise _NotDirectAudio("ce lien ne pointe pas directement vers un fichier audio")
-                name = (os.path.splitext(name)[0] or "import") + ext
-            tmp = library.new_incoming(ext)
-            limit = config.MAX_UPLOAD_MB * 1024 * 1024
-            size = 0
-            with open(tmp, "wb") as fh:
-                for chunk in resp.iter_bytes(1 << 20):
-                    size += len(chunk)
-                    if size > limit:
-                        raise HTTPException(413, "Fichier trop volumineux")
-                    fh.write(chunk)
-    except BaseException as exc:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
-        if isinstance(exc, (net.NetError, ValueError)) and not isinstance(exc, _NotDirectAudio):
-            if not started:  # lien injoignable ou erreur HTTP : peut-être une page (YouTube…)
-                raise _NotDirectAudio(str(exc)) from exc
-            raise HTTPException(400, f"Téléchargement interrompu : {exc}") from exc
-        raise
-    return library.ingest_any(tmp, name)
-
-
-def _notify_download(res: dict) -> dict:
-    """Notification « musique téléchargée » (l'appli Android la montre si on a quitté l'écran)."""
-    try:
-        if res.get("status") == "added":
-            tracks = res.get("tracks") or ([res["track"]] if res.get("track") else [])
-            users.log_activity("download", ", ".join(f"{t.get('title')} — {t.get('artist')}" for t in tracks[:3]))
-            if len(tracks) == 1:
-                notify.downloaded(tracks[0])
-            elif tracks:
-                notify.add("download", "Musique téléchargée", f"{len(tracks)} musiques téléchargées", "#/library",
-                           count_text="{n} musiques téléchargées", amount=len(tracks))
-    except Exception:
-        log.exception("notification de téléchargement")
-    return res
-
-
-@app.post("/api/import-url")
-def import_url(body: dict = Body(...)):
-    url = (body.get("url") or "").strip()
-    try:
-        quota.check()
-    except quota.QuotaFull as exc:
-        raise HTTPException(413, str(exc))
-    try:
-        return J(quota.mark(_import_url(url)))
-    except HTTPException as exc:
-        users.log_activity("import_error", f"{url[:120]} : {exc.detail}")
-        raise
-
-
-def _import_url(url: str) -> dict:
-    if not re.match(r"^https?://", url, re.I):
-        # pas un lien : on cherche et on télécharge ce titre en ligne
-        try:
-            return (_notify_download(downloader.search_download(url)))
-        except ValueError:
-            raise HTTPException(400, "Tape le nom d'une musique (ex. « Artiste - Titre ») ou colle un lien direct")
-        except RuntimeError as exc:
-            raise HTTPException(400, str(exc))
-    if downloader.playlist_kind(url) and not re.search(r"[?&]v=", url):
-        raise HTTPException(400, "C'est un lien de playlist : colle-le dans « Importer une playlist » (un peu plus bas).")
-    # lien : d'abord comme fichier audio direct (MP3, M4A…) ; sinon comme page d'un site
-    # (YouTube, SoundCloud, Bandcamp…) via le même moteur que la recherche par nom.
-    try:
-        return (_notify_download(_fetch_direct(url)))
-    except _NotDirectAudio:
-        pass
-    try:
-        return (_notify_download(downloader.download_from_url(url)))
-    except RuntimeError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/api/import-playlist")
-def import_playlist(body: dict = Body(...)):
-    """Résout un lien de playlist (YouTube, SoundCloud, Deezer, Spotify) en liste de titres à télécharger
-    (le téléchargement lui-même se fait ensuite titre par titre via /api/import-url, comme une
-    liste collée à la main)."""
-    url = (body.get("url") or "").strip()
-    if not url:
-        raise HTTPException(400, "Colle un lien de playlist")
-    try:
-        return J(downloader.resolve_playlist(url))
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
 
 
 # --------------------------------------------------------------------------- #
@@ -2445,369 +1976,7 @@ def qr_svg(text: str = ""):
 
 
 # --------------------------------------------------------------------------- #
-# Maintenance
+# Routes rangées dans leurs fichiers : playlists, import, maintenance, Pi, synchronisation
 # --------------------------------------------------------------------------- #
-@app.post("/api/library/scan")
-def rescan(body: dict = Body(default={})):
-    library.request_scan(full=bool(body.get("full")))
-    return library.status
-
-
-@app.get("/api/library/status")
-def scan_status():
-    lufs = db.q1("""SELECT SUM(lufs IS NOT NULL) done, SUM(lufs IS NULL AND lufs_tried=0) pending,
-                    COUNT(*) total FROM tracks""")
-    photos = db.q1("SELECT COUNT(*) n FROM artists WHERE image_id IS NOT NULL")["n"]
-    return {**library.status, "stats": _stats(), "loudness": {"done": lufs["done"] or 0, "pending": lufs["pending"] or 0,
-            "total": lufs["total"] or 0, "ffmpeg": bool(config.FFMPEG)}, "artistPhotos": photos}
-
-
-@app.post("/api/library/covers")
-def fetch_missing_covers():
-    return {"queued": library.queue_missing_covers(force=True)}
-
-
-@app.post("/api/library/artists")
-def fetch_artist_photos():
-    library.jobs.submit(library._safe, library.fetch_artist_images, True)
-    return {"ok": True}
-
-
-@app.get("/api/library/export/info")
-def library_export_info():
-    r = db.q1("SELECT COUNT(*) n, COALESCE(SUM(size), 0) size FROM tracks")
-    return {"tracks": r["n"], "size": r["size"]}
-
-
-def _export_manifest() -> bytes:
-    """Playlists et titres likés en JSON (les fichiers audio, eux, gardent leurs tags/pochette)."""
-    playlists = []
-    owners = {u["id"]: u["name"] for u in db.q("SELECT id, name FROM users")}
-    for p in db.q("SELECT id, name, description, owner_id FROM playlists ORDER BY created_at"):
-        tracks = db.q("""SELECT t.title, t.artist, a.name AS album FROM playlist_tracks pt
-                          JOIN tracks t ON t.id = pt.track_id JOIN albums a ON a.id = t.album_id
-                          WHERE pt.playlist_id = ? ORDER BY pt.position""", p["id"])
-        playlists.append({"name": p["name"], "description": p["description"], "owner": owners.get(p["owner_id"], ""),
-                          "tracks": [{"title": t["title"], "artist": t["artist"], "album": t["album"]} for t in tracks]})
-    liked = db.q("""SELECT t.title, t.artist, a.name AS album, l.user_id FROM likes l
-                     JOIN tracks t ON t.id = l.track_id JOIN albums a ON a.id = t.album_id
-                     ORDER BY l.liked_at DESC""")
-    manifest = {
-        "app": "Onde", "version": config.VERSION, "exported_at": time.time(),
-        "note": "Les fichiers audio de cette sauvegarde ont déjà leurs tags et leur pochette intégrés. "
-                "Ce fichier ne sert qu'à retrouver tes playlists et tes titres likés si besoin.",
-        "playlists": playlists,
-        "liked": [{"title": t["title"], "artist": t["artist"], "album": t["album"], "profile": owners.get(t["user_id"], "")}
-                  for t in liked],
-    }
-    return json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
-
-
-@app.get("/api/library/export")
-def library_export():
-    """Sauvegarde complète : tous les morceaux (Artiste/Album/…, tags et pochettes déjà dedans) + un
-    manifeste JSON listant playlists et titres likés, en un seul .zip streamé (peut être volumineux)."""
-    tracks = db.q("""SELECT t.path, t.title, t.track_no, t.ext, a.name AS album, a.artist AS album_artist
-                      FROM tracks t JOIN albums a ON a.id = t.album_id
-                      ORDER BY a.artist COLLATE NOCASE, a.name COLLATE NOCASE, t.disc_no, t.track_no""")
-    files = []
-    seen: dict[str, int] = {}
-    for t in tracks:
-        artist_dir = library.safe_name(t["album_artist"], config.UNKNOWN_ARTIST)
-        album_dir = library.safe_name(t["album"], config.SINGLES)
-        base = f"{t['track_no']:02d} - {t['title']}" if t["track_no"] else t["title"]
-        arc = f"{artist_dir}/{album_dir}/{library.safe_name(base, 'titre')}{t['ext']}"
-        if arc in seen:
-            seen[arc] += 1
-            stem, ext = os.path.splitext(arc)
-            arc = f"{stem} ({seen[arc]}){ext}"
-        else:
-            seen[arc] = 0
-        files.append((t["path"], arc))
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-    try:
-        tmp.write(_export_manifest())
-    finally:
-        tmp.close()
-    files.insert(0, (tmp.name, "onde-playlists-et-likes.json"))
-
-    def gen():
-        try:
-            yield from library.zip_stream(files)
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
-
-    name = f"onde-sauvegarde-{time.strftime('%Y-%m-%d')}.zip"
-    return StreamingResponse(gen(), media_type="application/zip", headers={"Content-Disposition": _disposition(name)})
-
-
-@app.get("/api/library/duplicates")
-def library_duplicates():
-    return {"groups": library.find_near_duplicates()}
-
-
-@app.post("/api/library/duplicates/merge")
-def duplicates_merge(body: dict = Body(...)):
-    """Garde un titre, met les autres à la corbeille (likes, playlists et historique passent sur celui gardé).
-    Sans `keep` : tous les groupes, en gardant le meilleur de chacun."""
-    if body.get("keep") is None:
-        n = 0
-        for g in library.find_near_duplicates():
-            n += tidy.merge_into(g["tracks"][0]["id"], [t["id"] for t in g["tracks"][1:]])
-    else:
-        try:
-            n = tidy.merge_into(int(body["keep"]), [int(i) for i in body.get("remove") or []])
-        except KeyError:
-            _404("Titre introuvable")
-    users.log_activity("trash", f"doublons : {n} titre(s) mis à la corbeille")
-    return {"removed": n}
-
-
-@app.get("/api/library/quality")
-def library_quality(kbps: int = 128):
-    return {"tracks": tidy.low_quality(max(32, min(kbps, 320)))}
-
-
-@app.post("/api/library/quality/{tid}/replace")
-def quality_replace(tid: int):
-    """Cherche une meilleure version en ligne ; si elle est meilleure, elle remplace l'ancienne (likes et
-    playlists gardés, l'ancienne va à la corbeille)."""
-    row = _track_row(tid)
-    try:
-        res = downloader.search_download(f"{row['artist']} - {row['title']}")
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-    new = res.get("track") or {}
-    nid = new.get("id")
-    if res.get("status") != "added" or not nid or nid == tid:
-        return {"replaced": False, "reason": "Pas d'autre version trouvée."}
-    nrow = db.q1("SELECT bitrate, ext, duration, size FROM tracks WHERE id=?", nid)
-    better = nrow and library.quality_key(nrow) < library.quality_key(row) \
-        and abs((nrow["duration"] or 0) - (row["duration"] or 0)) < 15
-    if better:
-        tidy.merge_into(nid, [tid], "remplacé par une meilleure version")
-        users.log_activity("import", f"meilleure version : {row['title']} — {row['artist']}")
-        return {"replaced": True, "track": M.track_by_id(nid)}
-    tidy.merge_into(tid, [nid], "pas meilleure")
-    return {"replaced": False, "reason": "La version trouvée n'est pas meilleure : on garde la tienne."}
-
-
-@app.post("/api/tracks/batch-edit")
-def tracks_batch_edit(body: dict = Body(...)):
-    """Mêmes infos pour plusieurs titres (artiste, album, année, genre…) ; un champ vide ne change rien."""
-    ids = [int(i) for i in body.get("ids") or []][:500]
-    fields = {k: v for k, v in (body.get("fields") or {}).items() if k in library.TAG_KEYS and k != "title" and str(v).strip() != ""}
-    if not ids or not fields:
-        raise HTTPException(400, "Rien à modifier")
-    done, errors = 0, []
-    for tid in ids:
-        row = db.q1("SELECT * FROM tracks WHERE id=?", tid)
-        if not row:
-            continue
-        old_album = db.q1("SELECT * FROM albums WHERE id=?", row["album_id"])
-        try:
-            library.write_tags(row["path"], fields)
-            _reindex(tid, row["path"], old_album)
-            done += 1
-        except Exception as exc:
-            errors.append(f"{row['title']} : {exc}")
-    library.bump()
-    return {"done": done, "errors": errors[:10]}
-
-
-@app.post("/api/tracks/batch-fix")
-def tracks_batch_fix(body: dict = Body(...)):
-    """Répare les infos de quelques titres (10 au plus par appel) avec Apple Music / Deezer : titre, artiste,
-    album, année, genre et pochette — seulement quand le résultat correspond vraiment au morceau."""
-    ids = [int(i) for i in body.get("ids") or []][:10]
-    fixed, skipped = [], []
-    for tid in ids:
-        row = db.q1("SELECT * FROM tracks WHERE id=?", tid)
-        if not row:
-            continue
-        parts = [row["artist"], clean.title(row["title"])] if row["artist"] != config.UNKNOWN_ARTIST else [row["title"]]
-        meta = downloader._lookup_meta(" ".join(parts), parts)
-        if not meta:
-            skipped.append(tid)
-            continue
-        fields = {k: v for k, v in {"title": meta.get("title"), "artist": meta.get("artist"), "album": meta.get("album"),
-                                     "album_artist": meta.get("albumArtist"), "year": meta.get("year"),
-                                     "genre": meta.get("genre"), "track_no": meta.get("trackNo")}.items() if v}
-        old_album = db.q1("SELECT * FROM albums WHERE id=?", row["album_id"])
-        try:
-            library.write_tags(row["path"], fields)
-            cover_url = meta.get("cover") or meta.get("thumb")
-            if cover_url and not (row["cover_id"] or (old_album and old_album["cover_id"])):
-                try:
-                    cid = covers.store_cover(covers.fetch_image(cover_url))
-                    jpeg = covers.embed_bytes(cid) if cid else None
-                    if jpeg:
-                        library.embed_cover(row["path"], jpeg)
-                except Exception as exc:
-                    log.info("pochette non ajoutée pour %s : %s", row["path"], exc)
-            _reindex(tid, row["path"], old_album)
-            fixed.append(tid)
-        except Exception as exc:
-            log.info("infos non réparées pour %s : %s", row["path"], exc)
-            skipped.append(tid)
-    if fixed:
-        library.bump()
-    return {"fixed": fixed, "skipped": skipped}
-
-
-# --------------------------------------------------------------------------- #
-# Mode enceinte (lecture sur le Pi)
-# --------------------------------------------------------------------------- #
-@app.get("/api/pi/state")
-def pi_state():
-    return player.state()
-
-
-@app.get("/api/pi/devices")
-def pi_devices():
-    if not player.available:
-        return {"devices": [], "current": ""}
-    try:
-        devices = player.audio_devices()
-    except Exception as exc:
-        raise HTTPException(503, f"mpv ne répond pas : {exc}")
-    return {"devices": devices, "current": settings.get("pi_audio_device")}
-
-
-@app.post("/api/pi/cmd")
-def pi_cmd(body: dict = Body(...)):
-    if not player.available:
-        raise HTTPException(503, "Lecture sur le Pi indisponible : installe mpv (sudo apt install mpv)")
-    try:
-        return player.command(str(body.get("action")), body)
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(503, str(exc))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/api/pi/events")
-async def pi_events(request: Request):
-    q = player.subscribe()
-
-    async def gen():
-        try:
-            yield f"data: {json.dumps(player.state())}\n\n"
-            while True:
-                try:
-                    state = await asyncio.wait_for(q.get(), timeout=15)
-                    while not q.empty():  # ne garde que le plus récent
-                        state = q.get_nowait()
-                    if _STREAMS_CLOSING.is_set():
-                        break
-                    yield f"data: {json.dumps(state)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                if _STREAMS_CLOSING.is_set() or await request.is_disconnected():
-                    break
-        finally:
-            player.unsubscribe(q)
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-
-# --------------------------------------------------------------------------- #
-# Lecture synchronisée entre appareils du même réseau (« suivre » un autre appareil)
-# --------------------------------------------------------------------------- #
-class _SyncHub:
-    """Diffuse en direct (SSE) le dernier état de lecture publié par n'importe quel appareil, pour
-    que d'autres appareils du même réseau puissent le « suivre ». Pas de notion de salle/compte : un
-    seul état partagé, à l'échelle du serveur — largement suffisant pour un usage familial sur un LAN."""
-
-    def __init__(self):
-        self.state: dict = {}
-        self._subs: set[asyncio.Queue] = set()
-        self._lock = threading.Lock()
-
-    def publish(self, state: dict) -> None:
-        with self._lock:
-            self.state = state
-            subs = list(self._subs)
-        for q in subs:
-            try:
-                q.put_nowait(state)
-            except asyncio.QueueFull:
-                pass
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=8)
-        with self._lock:
-            self._subs.add(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue) -> None:
-        with self._lock:
-            self._subs.discard(q)
-
-
-sync_hub = _SyncHub()
-
-
-@restart.on_exit
-def _close_event_streams() -> None:
-    """Termine tout de suite les flux en direct ouverts, sinon l'arrêt (Ctrl+C, redémarrage)
-    attendrait qu'ils se ferment d'eux-mêmes."""
-    _STREAMS_CLOSING.set()
-    loop = _app_loop
-    if loop is None or loop.is_closed():
-        return
-
-    def wake() -> None:
-        for q in list(player.subscribers) + list(sync_hub._subs):
-            try:
-                q.put_nowait({})
-            except asyncio.QueueFull:
-                pass  # file pleine : l'attente se termine de toute façon tout de suite
-
-    try:
-        loop.call_soon_threadsafe(wake)
-    except RuntimeError:
-        pass
-
-
-@app.post("/api/sync/broadcast")
-async def sync_broadcast(body: dict = Body(...)):  # async : les files asyncio ne se touchent que depuis la boucle
-    tid = body.get("trackId")
-    state = {
-        "trackId": int(tid) if isinstance(tid, (int, float, str)) and str(tid).lstrip("-").isdigit() else None,
-        "position": max(0.0, float(body.get("position") or 0)),
-        "paused": bool(body.get("paused")),
-        "device": str(body.get("device") or "Un appareil")[:60],
-        "ts": time.time(),
-    }
-    sync_hub.publish(state)
-    return {"ok": True}
-
-
-@app.get("/api/sync/events")
-async def sync_events(request: Request):
-    q = sync_hub.subscribe()
-
-    async def gen():
-        try:
-            if sync_hub.state:
-                yield f"data: {json.dumps(sync_hub.state)}\n\n"
-            while True:
-                try:
-                    state = await asyncio.wait_for(q.get(), timeout=15)
-                    while not q.empty():
-                        state = q.get_nowait()
-                    if _STREAMS_CLOSING.is_set():
-                        break
-                    yield f"data: {json.dumps(state)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                if _STREAMS_CLOSING.is_set() or await request.is_disconnected():
-                    break
-        finally:
-            sync_hub.unsubscribe(q)
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+for _router in (playlists_router, import_router, maintenance_router, pi_router, sync_router):
+    app.include_router(_router)

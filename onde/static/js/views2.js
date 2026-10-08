@@ -10,6 +10,7 @@ import { androidSection, bindAndroidSettings, remoteSection, bindRemote } from "
 import { alignSection, bindAlign } from "./align.js";
 import { offline, autoOffline } from "./offline.js";
 import { appShellTip } from "./downloads.js";
+import { wrappedView } from "./wrapped.js";
 
 function deviceSection() {
   if (!offline.supported) return "";
@@ -111,12 +112,14 @@ const monthFmt = new Intl.DateTimeFormat("fr", { month: "short", year: "2-digit"
 // ---------------------------------------------------------------- statistiques
 const RANGES = [[7, "7 jours"], [30, "30 jours"], [365, "12 mois"], [0, "Depuis le début"]];
 
+export const wrapped = (el, params) => wrappedView(el, params, page);
+
 export async function stats(el) {
   document.title = "Statistiques · Onde";
   page.setColor("#2b2356");
   let days = storage.get("onde.stats.days", 30);
   el.innerHTML = `<div class="page stats-page">
-    <h1 class="page-title">Tes statistiques</h1>
+    <div class="greet-row"><h1 class="page-title">Tes statistiques</h1><a class="chip" href="#/wrapped">${icon("sparkles", "sm")} Ton année</a></div>
     <div class="toolbar" role="tablist">${RANGES.map(([d, l]) => `<button class="chip${d === days ? " on" : ""}" data-days="${d}">${l}</button>`).join("")}</div>
     <div id="st-body"><div class="spinner"></div></div>
   </div>`;

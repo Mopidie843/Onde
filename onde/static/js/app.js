@@ -13,7 +13,7 @@ import { offline, autoOffline } from "./offline.js";
 import { bindDownloads, downloadsView, offlineNotice, hrefOf } from "./downloads.js";
 import { bindSmart, smartView, openSmartEditor, smartCover } from "./smart.js";
 import { bindViews, home, search, library, album, artist, playlist, liked, tracks, genre, importView } from "./views.js";
-import { bindViews2, stats, settingsView } from "./views2.js";
+import { bindViews2, stats, wrapped, settingsView } from "./views2.js";
 import { asksView } from "./asks.js";
 import { showWhatsNew } from "./whatsnew.js";
 import { bindDashboard, dashboardView, startAskBadge } from "./dashboard.js";
@@ -50,6 +50,7 @@ const routes = [
   [/^\/genre\/(.+)$/, genre, "genre"],
   [/^\/import$/, importView, "import"],
   [/^\/stats$/, stats, "stats"],
+  [/^\/wrapped(?:\/(\d{4}))?$/, wrapped, "wrapped"],
   [/^\/settings$/, settingsView, "settings"],
   [/^\/downloads$/, downloadsView, "downloads"],
   [/^\/smart\/(\d+)$/, smartView, "smart"],

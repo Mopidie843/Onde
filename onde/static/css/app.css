@@ -1303,3 +1303,46 @@ body.role-listener .ask-cta { display: flex !important; }
 .wn-ic { width: 34px; height: 34px; border-radius: 10px; background: #a48bff22; color: var(--accent); display: grid; place-items: center; flex: none; }
 .dash-page .sec-head h2, .asks-page .sec-head h2 { display: flex; align-items: center; gap: 8px; }
 .dash-page .sec-head { flex-wrap: wrap; gap: 4px 12px; }
+
+/* ---------- Ton année (bilan en diapositives) ---------- */
+.wr { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; color: #fff; background: var(--wr-bg, #2b2356); user-select: none; }
+.wr.t1 { --wr-bg: linear-gradient(160deg, #3b2a8f, #7a3fd1 60%, #d160b8); }
+.wr.t2 { --wr-bg: linear-gradient(160deg, #0f4c5c, #1a8a8f 70%, #6fd3b3); }
+.wr.t3 { --wr-bg: linear-gradient(160deg, #6b1d3a, #c2415d 70%, #f59a6a); }
+.wr.t4 { --wr-bg: linear-gradient(160deg, #1b2a6b, #3b5bdb 70%, #74b9ff); }
+.wr.t5 { --wr-bg: linear-gradient(160deg, #2b1c4d, #6b3fa0 60%, #e0a458); }
+.wr.t6 { --wr-bg: linear-gradient(160deg, #123524, #2f8f5b 70%, #c6e86a); }
+.wr.t7 { --wr-bg: linear-gradient(160deg, #4a1f6b, #b0409e 70%, #ffb36b); }
+.wr { background: var(--wr-bg); }
+.wr-prog { display: flex; gap: 4px; padding: calc(var(--safe-t) + 10px) 14px 0; }
+.wr-prog i { flex: 1; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .3); transition: background .3s; }
+.wr-prog i.done { background: #fff; }
+.wr-top { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; font-weight: 700; position: relative; z-index: 2; }
+.wr-year { background: rgba(0, 0, 0, .25); color: #fff; }
+.wr-close { color: #fff; }
+.wr-stage { position: relative; z-index: 2; pointer-events: none; flex: 1; display: grid; place-items: center; padding: 0 28px calc(var(--safe-b) + 28px); overflow-y: auto; }
+.wr-slide { width: min(520px, 100%); text-align: center; animation: wr-in .45s var(--ease); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+@keyframes wr-in { from { opacity: 0; transform: translateY(18px) scale(.98); } to { opacity: 1; transform: none; } }
+.wr-nav { position: absolute; top: 70px; bottom: 0; width: 38%; background: none; border: 0; cursor: pointer; z-index: 1; }
+.wr-slide a, .wr-slide button, .wr-top * { pointer-events: auto; }
+.wr-nav.prev { left: 0; } .wr-nav.next { right: 0; width: 62%; }
+.wr-kicker { margin: 0; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; opacity: .85; font-weight: 700; }
+.wr-big { margin: 0; font-size: clamp(40px, 11vw, 72px); line-height: 1.02; font-weight: 900; }
+.wr-huge { margin: 0; font-size: clamp(80px, 26vw, 170px); line-height: .95; font-weight: 900; letter-spacing: -.03em; }
+.wr-title { margin: 0; font-size: clamp(24px, 6vw, 34px); font-weight: 800; }
+.wr-sub { margin: 0; font-size: 16px; line-height: 1.5; opacity: .92; }
+.wr-hero { display: block; width: min(250px, 62vw); aspect-ratio: 1; border-radius: 14px; overflow: hidden; box-shadow: 0 18px 50px rgba(0, 0, 0, .4); }
+.wr-hero.round { border-radius: 50%; }
+.wr-hero img, .wr-hero .ph { width: 100%; height: 100%; object-fit: cover; }
+.wr-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; text-align: left; width: 100%; font-size: 15px; }
+.wr-list li { display: flex; gap: 12px; align-items: baseline; }
+.wr-list b { width: 18px; opacity: .7; } .wr-list em { opacity: .7; font-style: normal; }
+.wr-list a { color: inherit; text-decoration: none; }
+.wr-tags { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.wr-bars { display: flex; align-items: flex-end; gap: 5px; height: 110px; width: 100%; }
+.wr-bars span { flex: 1; height: var(--h); background: rgba(255, 255, 255, .35); border-radius: 4px 4px 0 0; position: relative; }
+.wr-bars span.on { background: #fff; }
+.wr-bars i { position: absolute; top: 100%; left: 0; right: 0; font-style: normal; font-size: 11px; text-align: center; opacity: .8; padding-top: 3px; }
+.wr-bars { margin-bottom: 18px; }
+.wr-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 10px; position: relative; z-index: 3; }
+@media (prefers-reduced-motion: reduce) { .wr, .wr-slide { animation: none; transition: none; } }

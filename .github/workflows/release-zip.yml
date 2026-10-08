@@ -1,20 +1,21 @@
 # Publie le zip d'Onde (onde-tout.zip) sur la page « Releases » : c'est ce que la mise à jour automatique
 # (Réglages → Mise à jour, source « Mopidie843/onde ») télécharge, vérifie (SHA-256) et installe.
 #
-# Pour sortir une mise à jour : change VERSION dans onde/config.py, envoie sur main. Ce workflow lance les tests,
+# Pour sortir une mise à jour : change VERSION dans onde/config.py, envoie sur la branche par défaut du dépôt. Ce workflow lance les tests,
 # puis crée la release « vX.Y.Z » avec le zip — sauf si cette version existe déjà. (À la main : onglet Actions.)
 name: Zip de mise à jour
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
+  push:  # (branche par défaut du dépôt seulement : voir la condition du job)
+    branches: ["**"]
 
 permissions:
   contents: write
 
 jobs:
   zip:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

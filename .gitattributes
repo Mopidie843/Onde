@@ -1,2 +1,4 @@
 *.bat text eol=crlf
 *.sh text eol=lf
+onde-tout.zip export-ignore
+onde.json export-ignore

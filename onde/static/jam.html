@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Onde — soirée</title><meta name="theme-color" content="#08080b"><link rel="icon" href="/static/icons/icon-192.png">
+<style>
+:root{color-scheme:dark;--a:#a48bff}*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;background:radial-gradient(900px 500px at 10% -10%,#3a2a78 0%,transparent 60%),#08080b;color:#f4f4f6;
+font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:calc(14px + env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom))}
+main{max-width:640px;margin:0 auto;display:grid;gap:16px}
+h1{margin:0;font-size:22px;display:flex;gap:10px;align-items:center}h1 img{width:34px;height:34px;border-radius:9px}
+.muted{color:#a3a3ad;font-size:14px;margin:0}
+.card{background:#131318;border:1px solid #23232b;border-radius:16px;padding:14px}
+input{width:100%;padding:13px 15px;border-radius:12px;border:1px solid #2c2c36;background:#0d0d11;color:inherit;font:inherit;outline:none}
+input:focus{border-color:var(--a);box-shadow:0 0 0 3px #a48bff33}
+.row{display:flex;align-items:center;gap:12px;padding:8px 4px;border-radius:10px}
+.row img,.row .ph{width:46px;height:46px;border-radius:8px;object-fit:cover;background:#26232f;flex:none}
+.t{flex:1;min-width:0}.t b,.t span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.t span{color:#a3a3ad;font-size:13px}
+button{border:0;border-radius:999px;padding:9px 14px;background:var(--a);color:#120d22;font:inherit;font-weight:700;cursor:pointer;flex:none}
+button:disabled{opacity:.5}button.ok{background:#2a2a33;color:#8fe3a8}
+.now{display:flex;gap:12px;align-items:center}.now img,.now .ph{width:64px;height:64px;border-radius:10px;background:#26232f}
+.lbl{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#a3a3ad;margin:0 0 6px}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#f4f4f6;color:#111;padding:10px 16px;border-radius:999px;font-weight:700;font-size:14px;display:none}
+</style></head>
+<body><main>
+  <h1><img src="/static/icons/icon-192.png" alt="">Soirée chez <span id="host">…</span></h1>
+  <p class="muted">Cherche un titre et ajoute-le : il passera bientôt sur l'enceinte de la soirée.</p>
+  <div class="card now" id="now" hidden><div class="ph"></div><div class="t"><p class="lbl">En ce moment</p><b></b><span></span></div></div>
+  <input id="name" placeholder="Ton prénom (pour savoir qui a mis quoi)" maxlength="30" autocomplete="given-name">
+  <input id="q" type="search" placeholder="Que veux-tu écouter ?" autocomplete="off" enterkeyhint="search">
+  <div class="card" id="results" hidden></div>
+  <div class="card"><p class="lbl">Déjà ajoutés</p><div id="added"><p class="muted">Rien pour l'instant : sois le premier !</p></div></div>
+</main><div class="toast" id="toast"></div>
+<script>
+(() => {
+  const token = location.pathname.split("/").filter(Boolean).pop();
+  const api = (p, o) => fetch(`/api/jam/${token}${p}`, o).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.detail || "Erreur"); return d; });
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const img = (c) => c ? `<img src="/api/jam/${token}/cover/${encodeURIComponent(c)}" alt="" loading="lazy">` : `<div class="ph"></div>`;
+  let guest = localStorage.getItem("onde.jam.guest");
+  if (!guest) { guest = Math.random().toString(36).slice(2, 12); try { localStorage.setItem("onde.jam.guest", guest); } catch {} }
+  const nameEl = $("#name");
+  try { nameEl.value = localStorage.getItem("onde.jam.name") || ""; } catch {}
+  nameEl.addEventListener("change", () => { try { localStorage.setItem("onde.jam.name", nameEl.value.trim()); } catch {} });
+  let toastT = 0;
+  const toast = (m) => { const t = $("#toast"); t.textContent = m; t.style.display = "block"; clearTimeout(toastT); toastT = setTimeout(() => { t.style.display = "none"; }, 2500); };
+  async function refresh() {
+    try {
+      const v = await api("");
+      $("#host").textContent = v.host;
+      const now = $("#now");
+      now.hidden = !v.now;
+      if (v.now) { now.firstElementChild.outerHTML = img(v.now.cover); now.querySelector("b").textContent = v.now.title; now.querySelector(".t span").textContent = v.now.artist; }
+      $("#added").innerHTML = v.added.length ? v.added.map((a) => `<div class="row">${img(a.track?.cover)}<div class="t"><b>${esc(a.track?.title || "?")}</b><span>${esc(a.track?.artist || "")} · ajouté par ${esc(a.by)}</span></div></div>`).join("")
+        : `<p class="muted">Rien pour l'instant : sois le premier !</p>`;
+    } catch (e) { document.querySelector("main").innerHTML = `<h1>Soirée terminée</h1><p class="muted">${esc(e.message)}</p>`; clearInterval(timer); }
+  }
+  let seq = 0;
+  $("#q").addEventListener("input", () => {
+    const q = $("#q").value.trim(), my = ++seq, box = $("#results");
+    if (!q) { box.hidden = true; return; }
+    setTimeout(async () => {
+      if (my !== seq) return;
+      const r = await api(`/search?q=${encodeURIComponent(q)}`).catch(() => ({ tracks: [] }));
+      if (my !== seq) return;
+      box.hidden = false;
+      box.innerHTML = r.tracks.length ? r.tracks.map((t) => `<div class="row">${img(t.cover)}<div class="t"><b>${esc(t.title)}</b><span>${esc(t.artist)}</span></div><button data-id="${t.id}">Ajouter</button></div>`).join("")
+        : `<p class="muted">Rien trouvé dans la bibliothèque.</p>`;
+    }, 200);
+  });
+  $("#results").addEventListener("click", async (e) => {
+    const b = e.target.closest("button[data-id]");
+    if (!b) return;
+    b.disabled = true;
+    try {
+      await api("/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trackId: +b.dataset.id, by: nameEl.value.trim(), guest }) });
+      b.textContent = "Ajouté ✓"; b.classList.add("ok"); toast("Ajouté à la file de la soirée !"); refresh();
+    } catch (err) { b.disabled = false; toast(err.message); }
+  });
+  refresh();
+  const timer = setInterval(refresh, 8000);
+})();
+</script></body></html>

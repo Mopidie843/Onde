@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="OndeTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/onde_bg</item>
+        <item name="android:statusBarColor">@color/onde_bg</item>
+        <item name="android:navigationBarColor">@color/onde_bg</item>
+        <item name="android:colorAccent">@color/onde_accent</item>
+    </style>
+    <color name="onde_bg">#08080b</color>
+    <color name="onde_accent">#a48bff</color>
+</resources>

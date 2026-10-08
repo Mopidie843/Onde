@@ -1,0 +1,54 @@
+# Fabrique Onde.exe automatiquement sur GitHub (Windows), après les tests : à chaque envoi de fichiers
+# sur le dépôt (ou à la main : onglet « Actions » → « Onde.exe » → Run workflow).
+# Le résultat est téléchargeable sur la page « Releases » du dépôt (colonne de droite).
+name: Onde.exe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dépendances
+        run: python -m pip install -r requirements-dev.txt "pyinstaller>=6.6"
+      - name: Tests
+        run: python -m pytest -q
+      - name: Fabrication
+        run: python -m PyInstaller --noconfirm --clean onde.spec
+      - name: Vérification (Onde.exe démarre et répond)
+        shell: pwsh
+        run: |
+          $env:ONDE_NO_BROWSER = "1"; $env:ONDE_PORT = "8799"; $env:ONDE_DATA_DIR = "$env:RUNNER_TEMP\onde-data"
+          $env:ONDE_MUSIC_DIR = "$env:RUNNER_TEMP\music"; New-Item -ItemType Directory -Force $env:ONDE_MUSIC_DIR | Out-Null
+          $p = Start-Process -FilePath dist\Onde.exe -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 60 -and -not $ok; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8799/api/info; $ok = $r.StatusCode -eq 200 } catch {}
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Process Onde -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not $ok) { throw "Onde.exe ne répond pas" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Onde-windows
+          path: dist/Onde.exe
+      - name: Publier Onde.exe (page Releases)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "onde-${{ github.run_number }}" dist/Onde.exe \
+            --title "Onde.exe (version ${{ github.run_number }})" \
+            --notes "Double-clique sur Onde.exe : Onde démarre, sans fenêtre noire, avec une icône près de l'horloge. Windows peut demander d'autoriser le réseau privé : accepte, c'est ce qui permet au téléphone de se connecter."

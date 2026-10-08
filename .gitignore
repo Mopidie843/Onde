@@ -1,0 +1,8 @@
+android/build/
+/build/
+/dist/
+.venv*/
+__pycache__/
+.pytest_cache/
+onde.env
+*.keystore

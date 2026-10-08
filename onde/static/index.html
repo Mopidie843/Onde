@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#08080b">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Onde">
+<meta name="description" content="Ta musique, chez toi — serveur musical local.">
+<title>Onde</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/css/app.css?v={{V}}">
+<link rel="modulepreload" href="/static/js/app.js?v={{V}}">
+<script type="module" src="/static/js/app.js?v={{V}}"></script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-logo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c3b2ff"/><stop offset="1" stop-color="#7c5cff"/>
+    </linearGradient>
+  </defs>
+  <symbol id="i-logo" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="url(#g-logo)"/><g fill="#120d22"><rect x="6.5" y="13" width="3.2" height="6" rx="1.6"/><rect x="11.8" y="8.5" width="3.2" height="15" rx="1.6"/><rect x="17" y="5.5" width="3.2" height="21" rx="1.6"/><rect x="22.3" y="11" width="3.2" height="10" rx="1.6"/></g></symbol>
+  <!-- icônes pleines -->
+  <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.14v13.72a1 1 0 0 0 1.52.85l11.13-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><g fill="currentColor"><rect x="6" y="4.5" width="4.2" height="15" rx="1.3"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.3"/></g></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><g fill="currentColor"><path d="M5.5 6.03v11.94a.9.9 0 0 0 1.38.76l9.2-5.97a.9.9 0 0 0 0-1.52l-9.2-5.97a.9.9 0 0 0-1.38.76z"/><rect x="16.6" y="5" width="2.3" height="14" rx="1.15"/></g></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><g fill="currentColor"><path d="M18.5 6.03v11.94a.9.9 0 0 1-1.38.76l-9.2-5.97a.9.9 0 0 1 0-1.52l9.2-5.97a.9.9 0 0 1 1.38.76z"/><rect x="5.1" y="5" width="2.3" height="14" rx="1.15"/></g></symbol>
+  <symbol id="i-heart-fill" viewBox="0 0 24 24"><path fill="currentColor" d="M12 20.6 4.4 13.3A5.1 5.1 0 0 1 12 6.4a5.1 5.1 0 0 1 7.6 6.9z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></g></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></g></symbol>
+  <!-- icônes au trait -->
+  <symbol id="i-heart" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 20.6 4.4 13.3A5.1 5.1 0 0 1 12 6.4a5.1 5.1 0 0 1 7.6 6.9z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.2 12 3.5l8.5 6.7V19a1.5 1.5 0 0 1-1.5 1.5h-4v-6H9v6H5A1.5 1.5 0 0 1 3.5 19z"/></g></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m20.5 20.5-4.8-4.8"/></g></symbol>
+  <symbol id="i-library" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 3.5v17M9.5 3.5v17M14 4.2l6 16"/></g></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5V3.8M7 8.5l5-4.8 5 4.8"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/></g></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-shuffle" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17.5h2.2a4 4 0 0 0 3.3-1.8l6.1-8.9a4 4 0 0 1 3.3-1.8H21"/><path d="m18 2.8 3 2.7-3 2.7"/><path d="M3 6.5h2.2a4 4 0 0 1 3.1 1.5"/><path d="M21 17.5h-3.1a4 4 0 0 1-3.1-1.5"/><path d="m18 14.8 3 2.7-3 2.7"/></g></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2.5 3.5 3.5L17 9.5"/><path d="M3.5 11.5V10a4 4 0 0 1 4-4h13"/><path d="m7 21.5-3.5-3.5L7 14.5"/><path d="M20.5 12.5V14a4 4 0 0 1-4 4h-13"/></g></symbol>
+  <symbol id="i-repeat-one" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2.5 3.5 3.5L17 9.5"/><path d="M3.5 11.5V10a4 4 0 0 1 4-4h13"/><path d="m7 21.5-3.5-3.5L7 14.5"/><path d="M20.5 12.5V14a4 4 0 0 1-4 4h-13"/><path d="M11 10.5h1.2v4.5" stroke-width="1.8"/></g></symbol>
+  <symbol id="i-queue" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h12M4 11h12M4 16h6"/></g><path fill="currentColor" d="M14.5 14.2v6.1a.6.6 0 0 0 .9.5l4.8-3a.6.6 0 0 0 0-1.1l-4.8-3a.6.6 0 0 0-.9.5z"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 8.8H3.5v6.4h3L11 19z"/><path d="M15.5 8.8a4.5 4.5 0 0 1 0 6.4"/><path d="M18.5 5.8a8.8 8.8 0 0 1 0 12.4"/></g></symbol>
+  <symbol id="i-volume-low" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 8.8H3.5v6.4h3L11 19z"/><path d="M15.5 8.8a4.5 4.5 0 0 1 0 6.4"/></g></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 8.8H3.5v6.4h3L11 19z"/><path d="m21.5 9-5.5 6M16 9l5.5 6"/></g></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2.5" width="14" height="19" rx="2.5"/><circle cx="12" cy="14.5" r="3.6"/><path d="M12 6.8h.01" stroke-width="2.6"/></g></symbol>
+  <symbol id="i-device" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="10" rx="1.6"/><path d="M1.5 18h16"/><rect x="18" y="8" width="4.5" height="11" rx="1.2"/></g></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.8v11.5M7 10.5l5 4.8 5-4.8"/><path d="M4.5 20h15"/></g></symbol>
+  <symbol id="i-download-circle" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><path d="M12 7.5v8M8.8 12.5l3.2 3.2 3.2-3.2"/></g></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6.5h17M9 6.5V4.3c0-.4.4-.8.8-.8h4.4c.4 0 .8.4.8.8v2.2M6 6.5l.9 13a1.6 1.6 0 0 0 1.6 1.5h7a1.6 1.6 0 0 0 1.6-1.5l.9-13"/></g></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.6a2.3 2.3 0 0 1 3.3 3.3L8 18.7l-4.4 1.2L4.8 15.5z"/></g></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="8.8" cy="8.8" r="1.8"/><path d="m21 15.5-4.2-4.2a1.8 1.8 0 0 0-2.5 0L5 20.6"/></g></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M20 6.5 9.2 17.3 4 12"/></symbol>
+  <symbol id="i-dl-done" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="currentColor"/><path fill="none" stroke="#0b0b10" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M12 7v8.2M8.6 12.1l3.4 3.4 3.4-3.4"/></symbol>
+  <symbol id="i-offline" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.3 6.9A6.2 6.2 0 0 1 17.4 10a4 4 0 0 1 2.6 6.4M16.5 19H7a4.5 4.5 0 0 1-1.6-8.7"/><path d="m3 3 18 18"/></g></symbol>
+  <symbol id="i-airplay" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 17H4.5A1.5 1.5 0 0 1 3 15.5v-10A1.5 1.5 0 0 1 4.5 4h15A1.5 1.5 0 0 1 21 5.5v10a1.5 1.5 0 0 1-1.5 1.5H18"/><path d="m12 14.5 4.5 5.5h-9z"/></g></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></g></symbol>
+  <symbol id="i-note" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5.5l11-2V16"/><circle cx="6.3" cy="18" r="2.8"/><circle cx="17.3" cy="16" r="2.8"/></g></symbol>
+  <symbol id="i-disc" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></g></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4.2"/><path d="M4 21a8 8 0 0 1 16 0"/></g></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20.5v-6.5M4 10V3.5M12 20.5V12M12 8V3.5M20 20.5v-4.5M20 12V3.5M1.5 14h5M9.5 8h5M17.5 16h5"/></g></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3.5V8H16"/></g></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/></g></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M10 3.5 11.8 8.2 16.5 10l-4.7 1.8L10 16.5l-1.8-4.7L3.5 10l4.7-1.8z"/><path d="m18 14 .9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9z"/></g></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3.5h6v6M9.5 20.5h-6v-6M20.5 3.5 14 10M3.5 20.5 10 14"/></g></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8.5 6h12M8.5 12h12M8.5 18h12M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></g></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></g></symbol>
+  <symbol id="i-lyrics" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h16M4 10h11M4 14.5h14M4 19h8"/><path d="M19 13.5v5.2a1.8 1.8 0 1 1-1.2-1.7" stroke-width="1.8"/></g></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M20.5 14.2A8.5 8.5 0 1 1 9.8 3.5a6.8 6.8 0 0 0 10.7 10.7z"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2.2"/><path d="M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 19.1a10 10 0 0 1 0-14.2M19.1 4.9a10 10 0 0 1 0 14.2"/></g></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20.5h16"/><path d="M7 16.5v-5M12 16.5V5.5M17 16.5V9"/></g></symbol>
+  <symbol id="i-cast" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6.5A1.5 1.5 0 0 1 4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M3 12a7 7 0 0 1 7 7M3 15.5A3.5 3.5 0 0 1 6.5 19"/><path d="M3 19h.01" stroke-width="2.6"/></g></symbol>
+  <symbol id="i-select" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8 12 3 3 5-6"/></g></symbol>
+  <symbol id="i-qr" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1"/><rect x="14" y="3.5" width="6.5" height="6.5" rx="1"/><rect x="3.5" y="14" width="6.5" height="6.5" rx="1"/><path d="M14 14h2.5v2.5H14zM18.5 18.5H20.5V20.5H18.5zM14 19h2.5M19 14v2.5" stroke-linecap="round"/></g></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></g></symbol>
+</svg>
+
+<div id="app">
+  <aside id="side">
+    <nav class="panel nav">
+      <a class="brand" href="#/" aria-label="Onde — accueil"><svg class="logo"><use href="#i-logo"/></svg><span>Onde</span></a>
+      <a class="nav-link" data-nav="home" href="#/"><svg class="ic"><use href="#i-home"/></svg><span>Accueil</span></a>
+      <a class="nav-link" data-nav="search" href="#/search"><svg class="ic"><use href="#i-search"/></svg><span>Rechercher</span></a>
+      <a class="nav-link import-only" data-nav="import" href="#/import"><svg class="ic"><use href="#i-upload"/></svg><span>Importer</span><span class="nav-badge" id="upload-badge" hidden></span></a>
+      <a class="nav-link listener-only" data-nav="asks" href="#/asks"><svg class="ic"><use href="#i-upload"/></svg><span>Demander un titre</span></a>
+      <a class="nav-link admin-only" data-nav="dashboard" href="#/dashboard"><svg class="ic"><use href="#i-chart"/></svg><span>Tableau de bord</span><span class="nav-badge" id="ask-badge" hidden></span></a>
+      <a class="nav-link" data-nav="stats" href="#/stats"><svg class="ic"><use href="#i-chart"/></svg><span>Statistiques</span></a>
+    </nav>
+    <section class="panel lib">
+      <header class="lib-head">
+        <a href="#/library" class="lib-title" data-nav="library"><svg class="ic"><use href="#i-library"/></svg><span>Bibliothèque</span></a>
+        <button class="icon-btn" data-act="new-playlist" title="Créer une playlist" aria-label="Créer une playlist"><svg class="ic"><use href="#i-plus"/></svg></button>
+      </header>
+      <div class="chips" id="lib-chips" role="tablist">
+        <button class="chip on" data-libf="playlists">Playlists</button>
+        <button class="chip" data-libf="albums">Albums</button>
+        <button class="chip" data-libf="artists">Artistes</button>
+        <button class="chip" data-libf="downloads" hidden>Téléchargés</button>
+      </div>
+      <div class="lib-list" id="lib-list"></div>
+    </section>
+  </aside>
+
+  <main id="main" class="panel">
+    <header id="topbar">
+      <div class="nav-arrows">
+        <button class="round-btn" data-act="back" aria-label="Précédent"><svg class="ic"><use href="#i-left"/></svg></button>
+        <button class="round-btn" data-act="forward" aria-label="Suivant"><svg class="ic"><use href="#i-right"/></svg></button>
+      </div>
+      <div class="top-title" id="top-title"></div>
+      <a id="offline-bar" href="#/downloads" hidden role="status" title="Le Raspberry Pi n'est pas joignable : ta musique téléchargée reste disponible"><svg class="ic"><use href="#i-offline"/></svg><span>Hors connexion</span></a>
+      <div class="top-actions">
+        <a class="pill-btn hide-mobile import-only" href="#/import"><svg class="ic"><use href="#i-upload"/></svg><span>Importer</span></a>
+        <a class="round-btn" href="#/settings" aria-label="Réglages" title="Réglages"><svg class="ic"><use href="#i-sliders"/></svg></a>
+      </div>
+    </header>
+    <div id="view" tabindex="-1"></div>
+  </main>
+
+  <aside id="queue-panel" class="panel" hidden aria-label="File d'attente"></aside>
+
+  <footer id="player" class="is-empty">
+    <div class="pl-left">
+      <button class="pl-cover p-open" aria-label="Ouvrir le lecteur"><span class="p-cover"></span></button>
+      <div class="pl-meta">
+        <a class="p-title" href="#/"></a>
+        <div class="p-artist"></div>
+      </div>
+      <button class="icon-btn p-like" aria-label="Liker"><svg class="ic"><use href="#i-heart"/></svg></button>
+    </div>
+    <div class="pl-center">
+      <div class="pl-controls">
+        <button class="icon-btn p-shuffle" aria-label="Lecture aléatoire" title="Lecture aléatoire"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+        <button class="icon-btn p-prev" aria-label="Précédent" title="Précédent"><svg class="ic"><use href="#i-prev"/></svg></button>
+        <button class="play-btn p-play" aria-label="Lecture"><svg class="ic"><use href="#i-play"/></svg></button>
+        <button class="icon-btn p-next" aria-label="Suivant" title="Suivant"><svg class="ic"><use href="#i-next"/></svg></button>
+        <button class="icon-btn p-repeat" aria-label="Répéter" title="Répéter"><svg class="ic"><use href="#i-repeat"/></svg></button>
+      </div>
+      <div class="pl-progress">
+        <span class="p-cur">0:00</span>
+        <input class="slider p-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position">
+        <span class="p-dur">0:00</span>
+      </div>
+    </div>
+    <div class="pl-right">
+      <button class="icon-btn p-lyrics hide-mobile" aria-label="Paroles" title="Paroles"><svg class="ic"><use href="#i-lyrics"/></svg></button>
+      <button class="icon-btn p-sleep hide-mobile" aria-label="Minuterie de sommeil" title="Minuterie de sommeil"><svg class="ic"><use href="#i-moon"/></svg><span class="sleep-badge"></span></button>
+      <button class="icon-btn p-queue" aria-label="File d'attente" title="File d'attente"><svg class="ic"><use href="#i-queue"/></svg></button>
+      <button class="icon-btn p-device" aria-label="Appareil de lecture" title="Appareil de lecture"><svg class="ic"><use href="#i-device"/></svg></button>
+      <div class="vol">
+        <button class="icon-btn p-mute" aria-label="Couper le son"><svg class="ic"><use href="#i-volume"/></svg></button>
+        <input class="slider p-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+      </div>
+      <button class="icon-btn p-open hide-mobile" aria-label="Plein écran" title="Lecteur plein écran"><svg class="ic"><use href="#i-expand"/></svg></button>
+    </div>
+    <div class="mini-progress"><i class="p-bar"></i></div>
+    <div class="pi-banner"><svg class="ic"><use href="#i-speaker"/></svg><span>Lecture sur le Raspberry Pi</span></div>
+  </footer>
+
+  <nav id="tabbar">
+    <a href="#/" data-nav="home"><svg class="ic"><use href="#i-home"/></svg><span>Accueil</span></a>
+    <a href="#/search" data-nav="search"><svg class="ic"><use href="#i-search"/></svg><span>Rechercher</span></a>
+    <a href="#/library" data-nav="library"><svg class="ic"><use href="#i-library"/></svg><span>Bibliothèque</span></a>
+    <a href="#/import" data-nav="import" class="import-only"><svg class="ic"><use href="#i-upload"/></svg><span>Importer</span></a>
+    <a href="#/asks" data-nav="asks" class="listener-only"><svg class="ic"><use href="#i-upload"/></svg><span>Demander</span></a>
+  </nav>
+</div>
+
+<section id="np" hidden aria-label="Lecture en cours">
+  <div class="np-bg"><span class="p-cover np-blur"></span></div>
+  <div class="np-inner">
+    <header class="np-head">
+      <button class="icon-btn np-close" aria-label="Fermer"><svg class="ic"><use href="#i-down"/></svg></button>
+      <div class="np-src"><small>Lecture depuis</small><a class="p-source" href="#/"></a></div>
+      <button class="icon-btn np-more" aria-label="Plus d'options"><svg class="ic"><use href="#i-more"/></svg></button>
+    </header>
+    <div class="np-body">
+      <section class="np-lyrics" id="np-lyrics" aria-label="Paroles"></section>
+      <div class="np-main">
+        <div class="np-art"><span class="p-cover"></span></div>
+        <div class="np-meta">
+          <div class="np-text"><div class="p-title np-title"></div><div class="p-artist np-artist"></div></div>
+          <button class="icon-btn p-like np-like" aria-label="Liker"><svg class="ic"><use href="#i-heart"/></svg></button>
+        </div>
+        <div class="np-progress">
+          <input class="slider p-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Position">
+          <div class="np-times"><span class="p-cur">0:00</span><span class="p-dur">0:00</span></div>
+        </div>
+        <div class="np-controls">
+          <button class="icon-btn p-shuffle" aria-label="Lecture aléatoire"><svg class="ic"><use href="#i-shuffle"/></svg></button>
+          <button class="icon-btn big p-prev" aria-label="Précédent"><svg class="ic"><use href="#i-prev"/></svg></button>
+          <button class="play-btn huge p-play" aria-label="Lecture"><svg class="ic"><use href="#i-play"/></svg></button>
+          <button class="icon-btn big p-next" aria-label="Suivant"><svg class="ic"><use href="#i-next"/></svg></button>
+          <button class="icon-btn p-repeat" aria-label="Répéter"><svg class="ic"><use href="#i-repeat"/></svg></button>
+        </div>
+        <button class="np-next" type="button" hidden><small>À suivre</small><span class="np-next-t"></span></button>
+        <div class="np-foot">
+          <button class="icon-btn p-device np-device" aria-label="Appareil"><svg class="ic"><use href="#i-device"/></svg><span class="p-device-name">Ce navigateur</span></button>
+          <div class="np-foot-r">
+            <button class="icon-btn p-lyrics np-lyrics-btn" aria-label="Paroles" title="Paroles"><svg class="ic"><use href="#i-lyrics"/></svg></button>
+            <button class="icon-btn p-sleep" aria-label="Minuterie de sommeil" title="Minuterie"><svg class="ic"><use href="#i-moon"/></svg><span class="sleep-badge"></span></button>
+            <button class="icon-btn np-queue-btn" aria-label="File d'attente"><svg class="ic"><use href="#i-queue"/></svg></button>
+          </div>
+        </div>
+      </div>
+      <aside class="np-side" id="np-queue"></aside>
+    </div>
+  </div>
+</section>
+
+<div id="drop" hidden><div class="drop-card"><svg class="ic"><use href="#i-upload"/></svg><b>Dépose ta musique ici</b><span>MP3, M4A, FLAC, OGG, WAV, albums en .zip — fichiers ou dossiers entiers</span></div></div>
+<div id="selbar" hidden></div>
+<div id="layer"></div>
+<div id="toasts" aria-live="polite"></div>
+<audio id="audio" preload="auto" x-webkit-airplay="allow"></audio>
+<noscript>Onde a besoin de JavaScript.</noscript>
+</body>
+</html>

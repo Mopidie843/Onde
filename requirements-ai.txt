@@ -1,0 +1,5 @@
+# Paroles synchronisées par IA (facultatif) : calage des paroles brutes sur la voix.
+# Le plus simple : bouton « Installer » dans les Réglages d'Onde, ou  ./start.sh ia
+# (sur PC Linux, installe d'abord torch « CPU » : pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu)
+stable-ts>=2.17
+imageio-ffmpeg>=0.5

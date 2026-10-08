@@ -1,0 +1,44 @@
+# Fabrique Onde.apk (Android) sur GitHub, à chaque envoi de fichiers (ou à la main : onglet « Actions »).
+# Résultat : page « Releases » du dépôt. Pour que les mises à jour s'installent PAR-DESSUS l'ancienne version,
+# il faut signer toujours avec la même clé : ajoute-la dans Settings > Secrets > ONDE_KEYSTORE_B64
+# (le fichier onde.keystore encodé en base64) ; sans ce secret, chaque version a sa propre clé.
+name: Onde.apk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Outils Android
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y default-jdk-headless aapt apksigner zipalign dalvik-exchange android-sdk-platform-23
+      - name: Clé de signature (si fournie)
+        env:
+          KS: ${{ secrets.ONDE_KEYSTORE_B64 }}
+        run: |
+          mkdir -p android/build
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > android/build/onde.keystore; fi
+      - name: Fabrication
+        env:
+          ONDE_VERSION_CODE: ${{ github.run_number }}
+        run: ./android/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Onde-android
+          path: android/build/Onde.apk
+      - name: Publier Onde.apk (page Releases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "apk-${{ github.run_number }}" android/build/Onde.apk \
+            --title "Onde.apk (version ${{ github.run_number }})" \
+            --notes "Appli Android d'Onde. Télécharge Onde.apk sur ton téléphone, ouvre-le et autorise l'installation depuis cette source."

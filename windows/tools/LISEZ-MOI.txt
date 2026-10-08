@@ -1,0 +1,4 @@
+Outils Windows d'Onde : ffmpeg.exe est téléchargé tout seul au premier lancement de start.bat
+(ou lance telecharger-outils.bat). Si tu as déjà ffmpeg dans ton PATH (ex. C:\ffmpeg), il est utilisé.
+Avec Onde.exe : copie ce dossier « tools » à côté d'Onde.exe.
+yt-dlp est fourni par Onde (paquet Python), rien à ajouter.

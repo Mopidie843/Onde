@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Onde — playlist partagée</title><meta name="theme-color" content="#08080b"><link rel="icon" href="/static/icons/icon-192.png">
+<meta name="robots" content="noindex">
+<style>
+:root{color-scheme:dark;--a:#a48bff}*{box-sizing:border-box}
+body{margin:0;min-height:100dvh;background:radial-gradient(900px 500px at 10% -10%,#3a2a78 0%,transparent 60%),#08080b;color:#f4f4f6;
+font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:calc(14px + env(safe-area-inset-top)) 16px calc(110px + env(safe-area-inset-bottom))}
+main{max-width:720px;margin:0 auto;display:grid;gap:16px}
+.head{display:flex;gap:16px;align-items:flex-end}
+.head .cv{width:132px;height:132px;border-radius:14px;object-fit:cover;background:#26232f;flex:none;box-shadow:0 12px 40px #0008}
+.head h1{margin:2px 0 4px;font-size:clamp(22px,6vw,34px);line-height:1.1;overflow-wrap:anywhere}
+.lbl{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#a3a3ad;margin:0}
+.muted{color:#a3a3ad;font-size:14px;margin:0}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{border:0;border-radius:999px;padding:11px 18px;background:var(--a);color:#120d22;font:inherit;font-weight:700;cursor:pointer}
+button.ghost{background:#24232c;color:#f4f4f6}
+.card{background:#131318;border:1px solid #23232b;border-radius:16px;padding:6px}
+.row{display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:10px;cursor:pointer;width:100%;background:none;color:inherit;text-align:left;font-weight:400}
+.row:hover{background:#1c1b23}.row.on{background:#251f3d}.row.on .t b{color:var(--a)}
+.row img,.row .ph{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#26232f;flex:none}
+.n{width:22px;text-align:right;color:#a3a3ad;font-size:13px;flex:none}
+.t{flex:1;min-width:0}.t b,.t span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.t b{font-weight:600}.t span{color:#a3a3ad;font-size:13px}
+.d{color:#a3a3ad;font-size:13px;flex:none}
+.player{position:fixed;left:0;right:0;bottom:0;background:#101015ee;backdrop-filter:blur(14px);border-top:1px solid #23232b;
+padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:none}
+.player.show{display:block}.pin{max-width:720px;margin:0 auto;display:flex;gap:12px;align-items:center}
+.pin img,.pin .ph{width:46px;height:46px;border-radius:8px;background:#26232f;object-fit:cover;flex:none}
+.pin .t{min-width:0}.ctl{display:flex;gap:6px;flex:none}.ctl button{width:44px;height:44px;padding:0;font-size:18px}
+.prog{max-width:720px;margin:8px auto 0;height:4px;border-radius:4px;background:#2a2a33;overflow:hidden;cursor:pointer}.prog i{display:block;height:100%;width:0;background:var(--a)}
+.foot{color:#6f6f7a;font-size:12px;text-align:center;margin-top:8px}
+@media (max-width:480px){.head{flex-direction:column;align-items:flex-start}.head .cv{width:160px;height:160px}}
+</style></head>
+<body><main>
+  <div class="head"><img class="cv" id="cv" alt=""><div><p class="lbl">Playlist partagée</p><h1 id="name">…</h1><p class="muted" id="sub"></p></div></div>
+  <div class="bar"><button id="playall">▶ Tout écouter</button><button class="ghost" id="shuffle">🔀 Aléatoire</button></div>
+  <p class="muted" id="desc" hidden></p>
+  <div class="card" id="list"></div>
+  <p class="foot">Écoute seule · partagé depuis Onde</p>
+</main>
+<div class="player" id="player"><div class="pin"><div class="ph" id="pcv"></div><div class="t"><b id="pt"></b><span id="pa"></span></div>
+  <div class="ctl"><button class="ghost" id="prev" aria-label="Précédent">⏮</button><button id="pp" aria-label="Lecture/pause">⏸</button><button class="ghost" id="next" aria-label="Suivant">⏭</button></div></div>
+  <div class="prog" id="prog"><i></i></div></div>
+<audio id="audio" preload="metadata"></audio>
+<script>
+(() => {
+  const token = location.pathname.split("/").filter(Boolean).pop();
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const cov = (c) => c ? `/api/share/${token}/cover/${encodeURIComponent(c)}` : "";
+  const img = (c) => c ? `<img src="${cov(c)}" alt="" loading="lazy">` : `<div class="ph"></div>`;
+  const dur = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+  const audio = $("#audio");
+  let tracks = [], order = [], pos = -1;
+  function play(i) {
+    if (i < 0 || i >= order.length) return;
+    pos = i;
+    const t = tracks[order[i]];
+    audio.src = `/api/share/${token}/stream/${t.id}`;
+    audio.play().catch(() => {});
+    $("#player").classList.add("show");
+    $("#pt").textContent = t.title; $("#pa").textContent = t.artist;
+    $("#pcv").outerHTML = t.cover ? `<img id="pcv" src="${cov(t.cover)}" alt="">` : `<div class="ph" id="pcv"></div>`;
+    document.querySelectorAll(".row").forEach((r) => r.classList.toggle("on", +r.dataset.i === order[i]));
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || "", artwork: t.cover ? [{ src: cov(t.cover), sizes: "384x384", type: "image/webp" }] : [] });
+    }
+  }
+  const start = (shuffle) => {
+    order = tracks.map((_, i) => i);
+    if (shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    play(0);
+  };
+  $("#playall").onclick = () => start(false);
+  $("#shuffle").onclick = () => start(true);
+  $("#next").onclick = () => play(pos + 1);
+  $("#prev").onclick = () => (audio.currentTime > 3 ? (audio.currentTime = 0) : play(pos - 1));
+  $("#pp").onclick = () => (audio.paused ? audio.play() : audio.pause());
+  audio.onplay = () => { $("#pp").textContent = "⏸"; };
+  audio.onpause = () => { $("#pp").textContent = "▶"; };
+  audio.onended = () => play(pos + 1);
+  audio.ontimeupdate = () => { $("#prog i").style.width = `${audio.duration ? (audio.currentTime / audio.duration) * 100 : 0}%`; };
+  $("#prog").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); if (audio.duration) audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration; };
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.setActionHandler("nexttrack", () => play(pos + 1));
+    navigator.mediaSession.setActionHandler("previoustrack", () => play(pos - 1));
+  }
+  $("#list").addEventListener("click", (e) => {
+    const r = e.target.closest(".row"); if (!r) return;
+    const i = +r.dataset.i;
+    if (!order.length || order.length !== tracks.length) order = tracks.map((_, k) => k);
+    play(order.indexOf(i));
+  });
+  fetch(`/api/share/${token}`).then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.detail || "Lien coupé"); return d; })
+    .then((v) => {
+      tracks = v.tracks;
+      document.title = `${v.name} · Onde`;
+      $("#name").textContent = v.name;
+      const min = Math.round(v.duration / 60);
+      $("#sub").textContent = `Par ${v.owner} · ${tracks.length} titre${tracks.length > 1 ? "s" : ""} · ${min >= 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min} min`}`;
+      if (v.description) { $("#desc").hidden = false; $("#desc").textContent = v.description; }
+      if (v.cover) $("#cv").src = cov(v.cover);
+      $("#list").innerHTML = tracks.length ? tracks.map((t, i) => `<button class="row" data-i="${i}"><span class="n">${i + 1}</span>${img(t.cover)}<span class="t"><b>${esc(t.title)}</b><span>${esc(t.artist)}</span></span><span class="d">${dur(t.dur)}</span></button>`).join("")
+        : `<p class="muted" style="padding:12px">Cette playlist est vide pour l'instant.</p>`;
+      $("#playall").disabled = $("#shuffle").disabled = !tracks.length;
+    })
+    .catch((e) => { document.querySelector("main").innerHTML = `<h1>Lien coupé</h1><p class="muted">${esc(e.message)}</p>`; });
+})();
+</script>
+</body></html>

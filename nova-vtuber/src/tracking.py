@@ -16,7 +16,7 @@ import numpy as np  # noqa: E402
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from . import autopause, health, obsws
+from . import autopause, health, obsws, perf
 from .settings import ROOT
 
 log = logging.getLogger("nova.tracking")
@@ -562,6 +562,11 @@ def _body_main(conn):
     """Processus séparé : MediaPipe bloque l'interpréteur pendant ses calculs, un processus dédié
     permet au suivi des bras de tourner en vrai parallèle du visage (autre cœur du processeur)."""
     try:
+        perf.boost(True)                       # processus séparé : il a besoin de son propre anti-bridage
+        perf.boost_thread("Games")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         tracker = BodyTracker()
     except Exception as e:  # noqa: BLE001
         conn.send(("error", str(e)))
@@ -893,6 +898,13 @@ class FrameGrabber(threading.Thread):
         self.frame, self.t, self.seq = None, time.monotonic(), 0
 
     def run(self):
+        token = perf.boost_thread("Capture")
+        try:
+            self._loop()
+        finally:
+            perf.unboost_thread(token)
+
+    def _loop(self):
         while not self._stop:
             try:
                 ok, frame = self.cap.read()
@@ -1077,6 +1089,13 @@ class CameraWorker(QThread):
             health.report("tracking", state=code, message=message)
 
     def run(self):
+        token = perf.boost_thread("Games")       # suivi prioritaire même quand un jeu est au premier plan
+        try:
+            self._run()
+        finally:
+            perf.unboost_thread(token)
+
+    def _run(self):
         idx, w, h, fps = self._settings()
         reserve = bool(self.profile["camera"].get("reserve", True))
         stream_cfg = self.profile.get("stream") or {}
@@ -1192,7 +1211,8 @@ class CameraWorker(QThread):
                     self.state_ready.emit({"lost": True, "arms": arms})
                 latency = (time.perf_counter() - t_proc) * 1000
                 # aperçu réduit (une seule copie, ~25 i/s max)
-                if self.preview_enabled and now - last_preview > 0.04:
+                # aperçu : 25 i/s, 8 i/s pendant un jeu (le jeu cache la fenêtre ; le suivi, lui, reste à pleine vitesse)
+                if self.preview_enabled and now - last_preview > (0.12 if perf.game_active() else 0.04):
                     last_preview = now
                     # on dessine sur la copie réduite : l'image d'origine est peut-être en cours d'analyse (bras)
                     small = cv2.resize(rgb, (480, int(480 * rgb.shape[0] / rgb.shape[1])))

@@ -8,7 +8,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("GLOG_minloglevel", "2")          # moins de messages MediaPipe dans la console
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--ignore-gpu-blocklist")
+# moteur d'affichage de l'avatar : pas de pause ni de ralentissement quand un jeu recouvre la fenêtre
+from src import perf  # noqa: E402
+
+os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = perf.chromium_flags(
+    os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "--ignore-gpu-blocklist"))
 
 
 def setup_logging():
@@ -60,6 +64,10 @@ def main():
     from PySide6.QtWidgets import QApplication, QMessageBox
     from src.ui.main_window import MainWindow
     app = QApplication(sys.argv)
+    try:
+        perf.boost(True)        # anti-bridage dès le lancement (l'interface peut le désactiver)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("Anti-bridage indisponible : %s", e)
     app.setApplicationName("Nova VTuber")
     app.setQuitOnLastWindowClosed(False)        # Nova peut continuer dans la zone de notification
     # une seule instance : si Nova est déjà ouvert, on l'affiche au lieu d'en lancer un deuxième

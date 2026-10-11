@@ -143,6 +143,9 @@ async function tick(){let h;const u=document.getElementById('upd');
  out.push(card('🎬 OBS',oc,o.state==='ok'?esc(o.scene||''):'',esc(o.message||'…')));
  const ov=h.overlay||{};out.push(card('🧍 Avatar dans OBS',ov.obs>0?'ok':'warn',ov.obs??0,
   ov.obs>0?'source(s) navigateur affichent l\\'avatar':'Aucune source OBS n\\'affiche l\\'avatar'));
+ const pf=h.perf||{};out.push(card('🚀 Anti-bridage',pf.state==='off'?'warn':pf.state?'ok':'',
+  pf.game?esc(pf.game):'',esc(pf.message||'…')+(pf.state&&pf.state!=='off'?` · priorité ${pf.priority==='high'?'haute':'au-dessus de la normale'}`+
+  (pf.gpu?` · GPU ${pf.gpu==='high'?'haute':pf.gpu==='above_normal'?'élevée':'normale'}`:''):'')));
  const a=h.autopause||{};out.push(card('☕ Pause automatique',a.state==='paused'?'warn':a.state==='on'?'ok':'','',
   esc(a.state==='off'?'Désactivée':(a.message||'Active'))+(a.away>3&&a.state!=='paused'?` · absent depuis ${Math.round(a.away)} s`:'')));
  document.getElementById('c').innerHTML=out.join('');

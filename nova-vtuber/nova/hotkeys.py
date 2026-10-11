@@ -3,6 +3,7 @@ import ctypes
 import logging
 import sys
 import threading
+import weakref
 from ctypes import wintypes
 
 from PySide6.QtCore import QObject, Signal
@@ -47,6 +48,23 @@ DEFAULT_HOTKEYS = [
 ]
 
 
+_managers: "weakref.WeakSet[HotkeyManager]" = weakref.WeakSet()
+ACTION_IDS = {a for a, _ in HOTKEY_ACTIONS}
+
+
+def trigger(action: str) -> bool:
+    """Déclenche une action comme si son raccourci avait été pressé (page Stream Deck, pause automatique…).
+    Utilisable depuis n'importe quel fil : le signal est transmis à l'interface."""
+    if action not in ACTION_IDS:
+        return False
+    live = list(_managers)
+    for m in live:
+        m.triggered.emit(action)
+    if not live:
+        log.warning("Action %s ignorée : gestionnaire de raccourcis absent", action)
+    return bool(live)
+
+
 def parse_keys(text: str) -> tuple[int, int] | None:
     """« Ctrl+Alt+1 » -> (modificateurs Windows, code de touche) ; None si invalide."""
     parts = [p.strip().lower() for p in (text or "").replace(" ", "").split("+") if p.strip()]
@@ -78,6 +96,7 @@ class HotkeyManager(QObject):
         self._thread = None
         self._tid = 0
         self._ready = threading.Event()
+        _managers.add(self)
 
     @staticmethod
     def available() -> bool:

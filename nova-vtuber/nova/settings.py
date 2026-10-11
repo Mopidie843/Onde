@@ -43,6 +43,10 @@ DEFAULT_PROFILE = {
               "light_color": "#ffffff", "rim": 0.5, "rim_color": "#8f7bff", "shadow": True,
               "brb_text": "Je reviens vite !"},
     "hotkeys": {"enabled": True, "bindings": []},
+    # live : pause automatique (absence > pause_delay s -> scène Pause d'OBS + écran pause de l'avatar ; retour ->
+    # scène d'avant), télécommande sur le réseau local (modo / tablette), mot de passe OBS si différent de celui d'OBS
+    "stream": {"auto_pause": True, "pause_delay": 30.0, "back_delay": 1.5, "pause_scene": "", "avatar_brb": True,
+               "lan_control": False, "obs_password": ""},
     "twitch": {
         "channel": "", "auto": False, "cooldown": 3.0, "duration": 5.0,
         "rules": [

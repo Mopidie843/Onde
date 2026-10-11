@@ -10,6 +10,8 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
+from . import health
+
 log = logging.getLogger("nova.twitch")
 HOST, PORT = "irc.chat.twitch.tv", 6697
 SUB_IDS = {"sub", "resub", "subgift", "submysterygift", "giftpaidupgrade", "primepaidupgrade", "anonsubgift"}
@@ -92,6 +94,7 @@ class TwitchChat(QObject):
 
     def __init__(self):
         super().__init__()
+        self.status.connect(lambda code, msg: health.report("twitch", state=code, message=msg))
         self._thread = None
         self._running = False
         self._stop = threading.Event()

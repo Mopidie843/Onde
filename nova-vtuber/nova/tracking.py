@@ -16,6 +16,7 @@ import numpy as np  # noqa: E402
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
+from . import autopause, health, obsws
 from .settings import ROOT
 
 log = logging.getLogger("nova.tracking")
@@ -807,6 +808,101 @@ def release_camera() -> None:
     CAMERA.shutdown()
 
 
+class FrameGrabber(threading.Thread):
+    """Lit la webcam en continu dans son propre fil : l'analyse prend toujours l'image la plus récente, sans
+    attendre la webcam pendant ses calculs (moins de latence, cadence plus régulière)."""
+
+    def __init__(self, cap):
+        super().__init__(daemon=True, name="nova-webcam")
+        self.cap = cap
+        self._cond = threading.Condition()
+        self._stop = False
+        self.frame, self.t, self.seq = None, time.monotonic(), 0
+
+    def run(self):
+        while not self._stop:
+            try:
+                ok, frame = self.cap.read()
+            except cv2.error:
+                ok, frame = False, None
+            if ok and frame is not None and frame.size:
+                with self._cond:
+                    self.frame, self.t = frame, time.monotonic()
+                    self.seq += 1
+                    self._cond.notify_all()
+            else:
+                time.sleep(0.03)
+
+    def latest(self, after: int, timeout: float = 0.5):
+        """(n°, image, heure) de la prochaine image après « after », ou None si rien n'est arrivé à temps."""
+        with self._cond:
+            self._cond.wait_for(lambda: self.seq != after or self._stop, timeout)
+            if self.seq == after or self.frame is None:
+                return None
+            return self.seq, self.frame, self.t
+
+    def stop(self):
+        self._stop = True
+        with self._cond:
+            self._cond.notify_all()
+        self.join(2.0)
+
+
+class LowLight:
+    """Pièce sombre (stream le soir, éclairage RGB) : éclaircit l'image avant l'analyse pour que le visage, les
+    yeux et la bouche restent détectés. Courbe gamma recalculée deux fois par seconde (≈1 ms par image)."""
+
+    TARGET, DARK = 115.0, 85.0
+
+    def __init__(self):
+        self.lut = None
+        self.level = 255.0
+        self._t = 0.0
+
+    def __call__(self, frame, now: float):
+        if now - self._t > 0.5:
+            self._t = now
+            self.level = float(cv2.cvtColor(frame[::8, ::8], cv2.COLOR_BGR2GRAY).mean())
+            if self.level < self.DARK:
+                g = math.log(self.TARGET / 255) / math.log(max(self.level, 8.0) / 255)
+                g = clamp(g, 0.35, 1.0)
+                self.lut = np.clip(((np.arange(256) / 255.0) ** g) * 255 + 0.5, 0, 255).astype(np.uint8)
+            else:
+                self.lut = None
+        return cv2.LUT(frame, self.lut) if self.lut is not None else frame
+
+    @property
+    def active(self) -> bool:
+        return self.lut is not None
+
+
+class SpikeGuard:
+    """Rejette une mesure aberrante isolée (tête qui « saute » de 40° sur une seule image : reflet, main devant
+    le visage…) ; un vrai mouvement rapide est confirmé à l'image suivante et passe."""
+
+    LIMITS = (40.0, 32.0, 32.0)      # yaw, pitch, roll (degrés par image)
+
+    def __init__(self):
+        self.last = None
+        self.suspect = False
+
+    def ok(self, yaw: float, pitch: float, roll: float) -> bool:
+        cur = (yaw, pitch, roll)
+        if self.last is None:
+            self.last = cur
+            return True
+        jump = any(abs(a - b) > lim for a, b, lim in zip(cur, self.last, self.LIMITS))
+        if jump and not self.suspect:
+            self.suspect = True
+            return False
+        self.suspect = False
+        self.last = cur
+        return True
+
+    def reset(self):
+        self.last, self.suspect = None, False
+
+
 class CameraWorker(QThread):
     frame_ready = Signal(QImage)
     state_ready = Signal(dict)
@@ -847,7 +943,7 @@ class CameraWorker(QThread):
     def _fail(self, e: CameraError):
         self.error_code, self.blockers = e.code, e.apps
         log.warning("Webcam : %s", e)
-        self.status.emit("error", str(e))
+        self._say("error", str(e))
         if e.code == "denied" and not CameraWorker._privacy_shown:
             CameraWorker._privacy_shown = True
             try:
@@ -877,19 +973,19 @@ class CameraWorker(QThread):
                 msg = f"Ouverture de la caméra {idx}… (nouvel essai)"
             if msg != last[0]:
                 last[0] = msg
-                self.status.emit("starting", msg)
+                self._say("starting", msg)
 
         cap = CAMERA.open((idx, w, h, fps), lambda: open_camera(
             idx, w, h, fps, should_stop=self._stopping, on_wait=waiting, wait_busy=None if reserve else 8.0))
         if CAMERA.index is not None and CAMERA.index != idx:
-            self.status.emit("starting", f"La caméra {idx} ne répond pas : Nova utilise la caméra {CAMERA.index}.")
+            self._say("starting", f"La caméra {idx} ne répond pas : Nova utilise la caméra {CAMERA.index}.")
             cam_cfg["index"] = CAMERA.index
         self.error_code, self.blockers = "", []
         return cap
 
     def _reconnect(self, idx: int, w: int, h: int, fps: int):
         """La webcam ne renvoie plus d'image (câble, mise en veille USB, autre application) : on la rouvre."""
-        self.status.emit("starting", "La webcam ne répond plus : reconnexion…")
+        self._say("starting", "La webcam ne répond plus : reconnexion…")
         CAMERA.close()
         try:
             cap = self._open(idx, w, h, fps)
@@ -897,23 +993,36 @@ class CameraWorker(QThread):
             if e.code != "stopped":
                 self._fail(e)
             return None
-        self.status.emit("running", "Webcam active")
+        self._say("running", "Webcam active")
         return cap
+
+    def _say(self, code: str, message: str):
+        self.status.emit(code, message)
+        if code in ("starting", "running", "error", "stopped"):
+            health.report("tracking", state=code, message=message)
 
     def run(self):
         idx, w, h, fps = self._settings()
         reserve = bool(self.profile["camera"].get("reserve", True))
-        self.status.emit("starting", f"Ouverture de la caméra {idx}…")
+        stream_cfg = self.profile.get("stream") or {}
+        autopause.AUTO.configure(stream_cfg)
+        try:
+            link = obsws.ensure_started()
+            link.password_override = stream_cfg.get("obs_password", "") or ""
+            autopause.AUTO.link = link
+        except Exception as e:  # noqa: BLE001
+            log.warning("Liaison OBS : %s", e)
+        self._say("starting", f"Ouverture de la caméra {idx}…")
         try:
             tracker = FaceTracker()
         except Exception as e:  # noqa: BLE001
             log.exception("Tracking indisponible")
-            self.status.emit("error", f"Tracking indisponible : {e}")
+            self._say("error", f"Tracking indisponible : {e}")
             return
         if not CAMERA.acquire(self._stopping):
             tracker.close()
             if self._running:
-                self.status.emit("error", "La session de suivi précédente ne rend pas la webcam. Réessayez dans quelques secondes.")
+                self._say("error", "La session de suivi précédente ne rend pas la webcam. Réessayez dans quelques secondes.")
             return
         try:
             cap = self._open(idx, w, h, fps)
@@ -927,46 +1036,55 @@ class CameraWorker(QThread):
             CAMERA.give_back(keep=False)
             tracker.close()
             log.exception("Ouverture de la webcam")
-            self.status.emit("error", f"Erreur d'ouverture de la webcam : {e}")
+            self._say("error", f"Erreur d'ouverture de la webcam : {e}")
             return
         idx = CAMERA.index if CAMERA.index is not None else idx
         cam_cfg = self.profile["camera"]
+        grabber = FrameGrabber(cap)
+        grabber.start()
+        light, guard = LowLight(), SpikeGuard()
+        self._hold = None
         body = None
         healthy = True
-        self.status.emit("running", "Webcam active")
-        fails, frames, t_fps, last_face = 0, 0, time.monotonic(), time.monotonic()
+        self._say("running", "Webcam active")
+        health.report("tracking", camera=f"{idx} ({CAMERA.backend})", face=False, fps=0.0, latency=0.0, light="")
+        frames, t_fps, last_face = 0, time.monotonic(), time.monotonic()
         face_lost = True
         last_preview = 0.0
         latency = 0.0
+        seq = 0
         try:
             while self._running:
                 t0 = time.monotonic()
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    fails += 1
-                    if fails > 30:
+                got = grabber.latest(seq, 0.5)
+                if got is None:
+                    if time.monotonic() - grabber.t > 2.0:      # plus aucune image depuis 2 s : on reconnecte
+                        grabber.stop()
                         cap = self._reconnect(idx, w, h, fps)
                         if cap is None:
                             healthy = False
                             if self._running and self.error_code not in ("busy", "nova", "denied", "failed"):
-                                self.status.emit("error", "La webcam ne renvoie plus d'image (débranchée ?).")
+                                self._say("error", "La webcam ne renvoie plus d'image (débranchée ?).")
                             break
-                        fails = 0
-                    else:
-                        self.msleep(30)
+                        grabber = FrameGrabber(cap)
+                        grabber.start()
+                        seq = 0
                     continue
-                fails = 0
+                seq, frame, t_frame = got
                 t_proc = time.perf_counter()   # latence = traitement seul (sans l'attente de l'image suivante)
                 if cam_cfg.get("mirror", True):
                     frame = cv2.flip(frame, 1)
+                frame = light(frame, t_frame)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 det = tracker.detect(rgb)
+                if det and not guard.ok(*det[:3]):
+                    det = self._hold          # mesure aberrante isolée : on garde la précédente
                 arms, dots = None, []
                 if self.profile["tracking"].get("body"):
                     if body is None:
                         body = BodyProcess()
                     if body.error:
-                        self.status.emit("error", f"Suivi des bras/mains indisponible : {body.error}")
+                        self._say("error", f"Suivi des bras/mains indisponible : {body.error}")
                         self.profile["tracking"]["body"] = False
                     else:
                         body.submit(rgb)
@@ -975,18 +1093,22 @@ class CameraWorker(QThread):
                     body.stop()
                     body = None
                 now = time.monotonic()
+                autopause.AUTO.feed(bool(det), now)
                 if det:
+                    self._hold = det
                     yaw, pitch, roll, bs, lms, pos = det
-                    out = self.mapper.map(yaw, pitch, roll, bs, lms=lms, pos=pos, aspect=rgb.shape[1] / rgb.shape[0])
+                    out = self.mapper.map(yaw, pitch, roll, bs, t=t_frame, lms=lms, pos=pos,
+                                          aspect=rgb.shape[1] / rgb.shape[0])
                     self.state_ready.emit({**out, "expr": dict(out["expr"]), "lost": False, "arms": arms})
                     last_face = now
                     if face_lost:
                         face_lost = False
-                        self.status.emit("face", "Visage détecté")
+                        guard.reset()
+                        self._say("face", "Visage détecté")
                 elif not face_lost and now - last_face > 0.5:
                     face_lost = True
                     self.state_ready.emit({"lost": True, "arms": arms})
-                    self.status.emit("noface", "Visage perdu — replacez-vous face à la caméra")
+                    self._say("noface", "Visage perdu — replacez-vous face à la caméra")
                 elif face_lost and arms is not None:
                     self.state_ready.emit({"lost": True, "arms": arms})
                 latency = (time.perf_counter() - t_proc) * 1000
@@ -1006,7 +1128,10 @@ class CameraWorker(QThread):
                     self.frame_ready.emit(img)
                 frames += 1
                 if now - t_fps >= 1.0:
-                    self.stats.emit(frames / (now - t_fps), latency)
+                    rate = frames / (now - t_fps)
+                    self.stats.emit(rate, latency)
+                    health.report("tracking", fps=round(rate, 1), latency=round(latency, 1), face=not face_lost,
+                                  light="pièce sombre : image éclaircie" if light.active else "")
                     frames, t_fps = 0, now
                 # limitation des FPS
                 budget = 1.0 / max(5, int(cam_cfg.get("fps_limit", 30)))
@@ -1016,11 +1141,14 @@ class CameraWorker(QThread):
         except Exception as e:  # noqa: BLE001
             healthy = False
             log.exception("Erreur dans la boucle de capture")
-            self.status.emit("error", f"Erreur de capture : {e}")
+            self._say("error", f"Erreur de capture : {e}")
         finally:
+            grabber.stop()
+            autopause.AUTO.tracking_stopped()
             # mode « réserver » : la webcam reste à Nova jusqu'à sa fermeture (aucune autre application ne la prend)
             CAMERA.give_back(keep=healthy and reserve and bool(cam_cfg.get("reserve", True)))
             tracker.close()
             if body is not None:
                 body.stop()
-            self.status.emit("stopped", "Webcam arrêtée")
+            health.report("tracking", face=False, fps=0.0)
+            self._say("stopped", "Webcam arrêtée")

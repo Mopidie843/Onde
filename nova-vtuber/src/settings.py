@@ -26,7 +26,7 @@ DEFAULT_PROFILE = {
     "camera": {"index": 0, "resolution": "640x480", "fps_limit": 30, "mirror": True, "reserve": True, "auto_free": False},
     "tracking": {
         "head": 1.0, "eyes": 1.0, "mouth": 1.0, "smoothing": 0.5, "deadzone": 0.5, "body": False,
-        "eye_sync": True, "iris": True, "lean": 1.0, "blink": 1.0, "autostart": False,
+        "eye_sync": True, "iris": True, "lean": 1.0, "blink": 1.0, "autostart": False, "auto_calibrate": True,
         "calibration": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0, "blink": 0.0, "mouth": 0.0,
                         "gx": 0.0, "gy": 0.0, "tx": 0.0, "ty": 0.0, "tz": 0.0,
                         "earL": 0.0, "earR": 0.0},

@@ -25,6 +25,31 @@ def setup_logging():
     sys.excepthook = hook
 
 
+TRAY_MENU_CSS = ("QMenu { background: #ffffff; color: #000000; border: 1px solid #c8c8d0; padding: 4px; } "
+                 "QMenu::item { padding: 6px 22px; background: transparent; color: #000000; } "
+                 "QMenu::item:selected { background: #e6e1ff; color: #000000; } "
+                 "QMenu::item:disabled { color: #8a8a8a; } "
+                 "QMenu::separator { height: 1px; background: #dcdce4; margin: 4px 8px; }")
+
+
+def fix_tray_menu(app, win):
+    """Menu de l'icône près de l'horloge (Nova en arrière-plan) : texte noir sur fond clair. Le thème sombre de
+    Nova mettait ce texte en blanc alors que le menu garde le fond clair de Windows : il était illisible."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+
+    class TrayMenuFix(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Show and isinstance(obj, QMenu):
+                trays = [t.contextMenu() for t in win.findChildren(QSystemTrayIcon)]
+                if (obj in trays or obj.parentWidget() is None) and obj.styleSheet() != TRAY_MENU_CSS:
+                    obj.setStyleSheet(TRAY_MENU_CSS)
+            return False
+
+    app.nova_tray_fix = TrayMenuFix(app)
+    app.installEventFilter(app.nova_tray_fix)
+
+
 def main():
     setup_logging()
     import setup_assets
@@ -55,6 +80,7 @@ def main():
                              "Relancez install.bat.")
         return 1
     win = MainWindow()
+    fix_tray_menu(app, win)
     win.show()
     if not testing:
         server = QLocalServer(win)

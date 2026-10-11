@@ -1,0 +1,106 @@
+# Fabrique « Nova VTuber.exe » et son installateur sur une machine Windows de GitHub, à chaque envoi qui touche
+# au dossier nova-vtuber/ (ou à la main : onglet Actions › Nova VTuber.exe › Run workflow).
+# Résultat téléchargeable sur la page « Releases » du dépôt.
+name: Nova VTuber.exe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "nova-vtuber/**"
+      - ".github/workflows/nova-vtuber-exe.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nova-vtuber-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: nova-vtuber
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Projet complet ?
+        id: check
+        run: |
+          $missing = @("main.py", "setup_assets.py", "src/ui/main_window.py", "web") | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            "complete=false" >> $env:GITHUB_OUTPUT
+            "### Nova VTuber.exe : fabrication en attente`nFichiers du projet manquants : $($missing -join ', ')" >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "::notice::Projet incomplet ($($missing -join ', ')) : fabrication du .exe sautée"
+          } else { "complete=true" >> $env:GITHUB_OUTPUT }
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.complete == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Dépendances
+        if: steps.check.outputs.complete == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path requirements.txt) { python -m pip install -r requirements.txt }
+          python -m pip install -r packaging/requirements-exe.txt
+
+      - name: Ressources (modèles de suivi, avatars)
+        if: steps.check.outputs.complete == 'true'
+        run: python -c "import setup_assets; m = setup_assets.missing_assets(); m and setup_assets.main(); print('manquant :', setup_assets.missing_assets())"
+
+      - name: Fabrication de l'exe
+        if: steps.check.outputs.complete == 'true'
+        run: python -m PyInstaller --noconfirm --clean packaging/nova.spec
+
+      - name: Test de démarrage (l'exe s'ouvre puis se ferme seul)
+        if: steps.check.outputs.complete == 'true'
+        run: |
+          $env:NOVA_SMOKE_MS = "8000"
+          $p = Start-Process -FilePath "dist/Nova VTuber/Nova VTuber.exe" -ArgumentList "--smoke-test" -PassThru
+          $null = $p.Handle      # sinon PowerShell ne garde pas le code de sortie
+          if (-not $p.WaitForExit(120000)) { $p | Stop-Process -Force; throw "Nova VTuber.exe ne se ferme pas" }
+          if ($p.ExitCode -ne 0) { Get-Content "dist/Nova VTuber/logs/nova.log" -Tail 80 -ErrorAction SilentlyContinue; throw "Nova VTuber.exe a quitté avec le code $($p.ExitCode)" }
+          Get-Content "dist/Nova VTuber/logs/nova.log" -Tail 20 -ErrorAction SilentlyContinue
+          foreach ($d in "config", "profiles", "logs") { Remove-Item -Recurse -Force "dist/Nova VTuber/$d" -ErrorAction SilentlyContinue }
+
+      - name: Journal en cas d'échec
+        if: failure() && steps.check.outputs.complete == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nova-log
+          path: nova-vtuber/dist/Nova VTuber/logs
+          if-no-files-found: ignore
+
+      - name: Installateur (Inno Setup)
+        if: steps.check.outputs.complete == 'true'
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc /Q "/DAppVersion=1.0.${{ github.run_number }}" packaging/installer.iss
+          if ($LASTEXITCODE) { throw "Inno Setup a échoué" }
+          Compress-Archive -Path "dist/Nova VTuber" -DestinationPath "dist/Nova-VTuber-portable-1.0.${{ github.run_number }}.zip"
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        if: steps.check.outputs.complete == 'true'
+        with:
+          name: Nova-VTuber-windows
+          path: |
+            nova-vtuber/dist/Nova-VTuber-Installation-*.exe
+            nova-vtuber/dist/Nova-VTuber-portable-*.zip
+
+      - name: Publier (page Releases)
+        if: steps.check.outputs.complete == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "1.0.${{ github.run_number }}"
+          $notes = "Installation : téléchargez Nova-VTuber-Installation-$v.exe et double-cliquez dessus (pas besoin d'être administrateur). Windows SmartScreen peut afficher « Windows a protégé votre ordinateur » : cliquez sur « Informations complémentaires » puis « Exécuter quand même ». Version sans installation : le .zip portable."
+          $pre = if ("${{ github.ref_name }}" -in @("main", "master")) { @() } else { @("--prerelease") }
+          gh release create "nova-vtuber-$v" (Get-ChildItem dist/Nova-VTuber-Installation-*.exe).FullName (Get-ChildItem dist/Nova-VTuber-portable-*.zip).FullName --target "${{ github.sha }}" --title "Nova VTuber $v" --notes $notes @pre

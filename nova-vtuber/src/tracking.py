@@ -140,6 +140,40 @@ class FaceMapper:
         cal = cfg.get("calibration", {})
         self._open = [cal.get("earL") or None, cal.get("earR") or None]   # ouverture « normale » apprise par œil
         self._blink_until = [0.0, 0.0]
+        self._auto = []                       # échantillons du calibrage automatique
+        self.auto_calibrated = False
+
+    def _never_calibrated(self) -> bool:
+        cal = self.cfg.get("calibration", {})
+        return not any(cal.get(k) for k in ("yaw", "pitch", "roll", "earL", "earR", "tz"))
+
+    def _auto_calibrate(self) -> None:
+        """Premier lancement (jamais calibré) : la pose neutre est apprise toute seule après ~1,5 s face à la
+        caméra (tête droite, yeux ouverts, bouche fermée). « Calibrer » reste possible à tout moment."""
+        r = self.last_raw
+        bs = r["bs"]
+        if (abs(r["yaw"]) > 25 or abs(r["pitch"]) > 25 or bs.get("jawOpen", 0) > 0.15
+                or (bs.get("eyeBlinkLeft", 0) + bs.get("eyeBlinkRight", 0)) / 2 > 0.4):
+            return
+        self._auto.append(r)
+        if len(self._auto) < 45:
+            return
+        med = lambda vals: float(np.median([v for v in vals if v is not None])) if any(
+            v is not None for v in vals) else 0.0
+        a = self._auto
+        iris = [x["iris"] for x in a if x["iris"]]
+        pos = [x["pos"] for x in a if x["pos"]]
+        ears = [x.get("ears") or (None, None) for x in a]
+        self.cfg["calibration"] = {
+            "yaw": med([x["yaw"] for x in a]), "pitch": med([x["pitch"] for x in a]), "roll": med([x["roll"] for x in a]),
+            "blink": med([(x["bs"].get("eyeBlinkLeft", 0) + x["bs"].get("eyeBlinkRight", 0)) / 2 for x in a]),
+            "mouth": med([x["bs"].get("jawOpen", 0) for x in a]),
+            "gx": med([i[0] for i in iris]), "gy": med([i[1] for i in iris]),
+            "tx": med([q[0] for q in pos]), "ty": med([q[1] for q in pos]), "tz": med([q[2] for q in pos]),
+            "earL": med([e[0] for e in ears]), "earR": med([e[1] for e in ears])}
+        self._open = [self.cfg["calibration"]["earL"] or None, self.cfg["calibration"]["earR"] or None]
+        self._auto, self.auto_calibrated, self.out = [], True, None
+        log.info("Calibrage automatique fait : %s", self.cfg["calibration"])
 
     def calibrate(self) -> bool:
         if not self.last_raw:
@@ -215,6 +249,9 @@ class FaceMapper:
             if a and b:
                 iris = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
         self.last_raw = {"yaw": yaw, "pitch": pitch, "roll": roll, "bs": bs, "iris": iris, "pos": pos, "ears": ears}
+        if not self.auto_calibrated and c.get("auto_calibrate", True) and self._never_calibrated():
+            self._auto_calibrate()
+            cal = self.cfg["calibration"]
         bgx = clamp(((g("eyeLookOutLeft", 0) - g("eyeLookInLeft", 0)) + (g("eyeLookInRight", 0) - g("eyeLookOutRight", 0))) / 2, -1, 1)
         bgy = clamp(((g("eyeLookUpLeft", 0) + g("eyeLookUpRight", 0)) - (g("eyeLookDownLeft", 0) + g("eyeLookDownRight", 0))) / 2, -1, 1)
         if iris:
@@ -300,6 +337,8 @@ class FaceTracker:
             base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
+            # visage gardé plus longtemps de profil, en contre-jour ou à moitié caché (moins de « visage perdu »)
+            min_face_detection_confidence=0.5, min_face_presence_confidence=0.4, min_tracking_confidence=0.4,
             output_face_blendshapes=True,
             output_facial_transformation_matrixes=True,
         )
@@ -1044,6 +1083,7 @@ class CameraWorker(QThread):
         grabber.start()
         light, guard = LowLight(), SpikeGuard()
         self._hold = None
+        auto_said = self.mapper.auto_calibrated
         body = None
         healthy = True
         self._say("running", "Webcam active")
@@ -1105,6 +1145,9 @@ class CameraWorker(QThread):
                         face_lost = False
                         guard.reset()
                         self._say("face", "Visage détecté")
+                    if self.mapper.auto_calibrated and not auto_said:
+                        auto_said = True
+                        self._say("face", "Visage détecté — calibrage automatique fait (pose neutre apprise)")
                 elif not face_lost and now - last_face > 0.5:
                     face_lost = True
                     self.state_ready.emit({"lost": True, "arms": arms})

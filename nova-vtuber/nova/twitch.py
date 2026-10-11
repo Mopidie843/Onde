@@ -26,6 +26,12 @@ ACTIONS = [("effect:hearts", "Effet : pluie de cœurs"), ("effect:confetti", "Ef
            ("acc:halo", "Accessoire : auréole"), ("acc:horns", "Accessoire : cornes"),
            ("acc:glasses", "Accessoire : lunettes"), ("acc:crown", "Accessoire : couronne")]
 KINDS = {"command": "Commande du chat", "bits": "Bits (cheer)", "sub": "Abonnement / sub offert", "raid": "Raid"}
+_TAG_ESCAPES = {":": ";", "s": " ", "\\": "\\", "r": "\r", "n": "\n"}
+
+
+def _unescape_tag(v: str) -> str:
+    """Valeurs des tags IRCv3 : \\s = espace, \\: = point-virgule, \\\\ = barre oblique inverse…"""
+    return re.sub(r"\\(.?)", lambda m: _TAG_ESCAPES.get(m.group(1), m.group(1)), v)
 
 
 def clean_channel(name: str) -> str:
@@ -41,7 +47,7 @@ def parse_line(line: str) -> dict:
         raw, _, line = line[1:].partition(" ")
         for kv in raw.split(";"):
             k, _, v = kv.partition("=")
-            tags[k] = v.replace("\\s", " ")
+            tags[k] = _unescape_tag(v)
     prefix = ""
     if line.startswith(":"):
         prefix, _, line = line[1:].partition(" ")
@@ -88,6 +94,7 @@ class TwitchChat(QObject):
         super().__init__()
         self._thread = None
         self._running = False
+        self._stop = threading.Event()
         self._sock = None
         self.channel = ""
 
@@ -99,12 +106,16 @@ class TwitchChat(QObject):
         self.stop()
         self.channel = channel
         self._running = True
-        self._thread = threading.Thread(target=self._run, args=(channel,), daemon=True, name="twitch")
+        # chaque connexion a son propre signal d'arrêt : une ancienne connexion encore en train de se fermer
+        # ne peut plus repartir en parallèle de la nouvelle (messages et réactions en double)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(channel, self._stop), daemon=True, name="twitch")
         self._thread.start()
         return True
 
     def stop(self):
         self._running = False
+        self._stop.set()
         s = self._sock
         if s is not None:
             try:
@@ -119,20 +130,23 @@ class TwitchChat(QObject):
     def running(self):
         return self._running
 
-    def _run(self, channel: str):
+    def _run(self, channel: str, stop: threading.Event):
         backoff = 2.0
-        while self._running:
+        while not stop.is_set():
             self.status.emit("connecting", f"Connexion au chat de {channel}…")
+            sock = None
             try:
                 raw = socket.create_connection((HOST, PORT), timeout=10)
                 sock = ssl.create_default_context().wrap_socket(raw, server_hostname=HOST)
                 sock.settimeout(1.0)
+                if stop.is_set():
+                    break
                 self._sock = sock
                 nick = f"justinfan{random.randint(10000, 99999)}"     # identifiant anonyme officiel (lecture seule)
                 for cmd in ("CAP REQ :twitch.tv/tags twitch.tv/commands", f"NICK {nick}", f"JOIN #{channel}"):
                     sock.sendall((cmd + "\r\n").encode())
                 buf, last, announced = b"", time.monotonic(), False
-                while self._running:
+                while not stop.is_set():
                     try:
                         data = sock.recv(8192)
                     except socket.timeout:
@@ -159,17 +173,18 @@ class TwitchChat(QObject):
                             continue
                         self.event.emit(ev)
             except Exception as e:  # noqa: BLE001
-                if self._running:
+                if not stop.is_set():
                     log.warning("Chat Twitch : %s", e)
                     self.status.emit("error", f"Chat Twitch déconnecté ({e}). Nouvelle tentative dans {int(backoff)} s…")
-                    end = time.monotonic() + backoff
-                    while self._running and time.monotonic() < end:
-                        time.sleep(0.2)
+                    stop.wait(backoff)
                     backoff = min(backoff * 2, 60)
             finally:
                 try:
-                    self._sock and self._sock.close()
+                    if sock is not None:
+                        sock.close()
                 except OSError:
                     pass
-                self._sock = None
-        self.status.emit("stopped", "Chat Twitch arrêté")
+                if self._sock is sock:
+                    self._sock = None
+        if self._stop is stop:          # pas de « arrêté » si une nouvelle connexion a déjà pris le relais
+            self.status.emit("stopped", "Chat Twitch arrêté")

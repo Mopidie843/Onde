@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import unquote
 
 import numpy as np
 
@@ -47,7 +48,7 @@ def load_gltf(path: Path) -> tuple[dict, bytearray]:
         if uri.startswith("data:"):
             blobs.append(base64.b64decode(uri.split(",", 1)[1]))
         else:
-            blobs.append((path.parent / uri).read_bytes())
+            blobs.append((path.parent / unquote(uri)).read_bytes())
     bin_, starts = bytearray(), []
     for b in blobs:
         bin_ += b"\0" * (-len(bin_) % 4)
@@ -64,7 +65,7 @@ def load_gltf(path: Path) -> tuple[dict, bytearray]:
             mime = uri[5:].split(";", 1)[0]
             data = base64.b64decode(uri.split(",", 1)[1])
         else:
-            data = (path.parent / uri).read_bytes()
+            data = (path.parent / unquote(uri)).read_bytes()
             mime = "image/png" if uri.lower().endswith(".png") else "image/jpeg"
         bin_ += b"\0" * (-len(bin_) % 4)
         js.setdefault("bufferViews", []).append({"buffer": 0, "byteOffset": len(bin_), "byteLength": len(data)})

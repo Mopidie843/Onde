@@ -1,10 +1,18 @@
 """Capture webcam (thread dédié) + tracking facial MediaPipe Face Landmarker."""
+import atexit
+import gc
 import logging
 import math
+import os
+import sys
+import threading
 import time
 
-import cv2
-import numpy as np
+# Media Foundation : sans cela, l'ouverture de certaines webcams prend 10 à 30 s (transformations matérielles)
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
@@ -561,11 +569,250 @@ class BodyProcess:
             self.proc.terminate()
 
 
+# ---------------------------------------------------------------- ouverture de la webcam
+if sys.platform == "win32":
+    BACKENDS = (("DirectShow", cv2.CAP_DSHOW), ("Media Foundation", cv2.CAP_MSMF))
+else:
+    BACKENDS = (("auto", cv2.CAP_ANY),)
+FIRST_FRAME = 2.5      # secondes : certaines webcams mettent 1 à 2 s à envoyer leur première image
+WAIT_UNKNOWN = 8.0     # webcam muette sans coupable identifié : on réessaie ce temps-là avant d'abandonner
+PROBE_MAX = 6          # numéros de caméra essayés quand celui choisi ne répond pas
+
+
+class CameraError(RuntimeError):
+    """Webcam impossible à ouvrir. code : denied (bloquée par Windows) | nova (autre fenêtre de Nova) |
+    busy (autre application) | failed (raison inconnue) | stopped (arrêt demandé pendant l'attente)."""
+
+    def __init__(self, code: str, message: str, apps: list | None = None):
+        super().__init__(message)
+        self.code, self.apps = code, apps or []
+
+
+def _sleep(seconds: float, should_stop) -> bool:
+    """Attend par petits pas ; retourne False si l'arrêt a été demandé."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if should_stop():
+            return False
+        time.sleep(0.05)
+    return not should_stop()
+
+
+def _first_frame(cap, timeout: float | None = None) -> bool:
+    """La webcam envoie-t-elle vraiment des images ? « Ouverte » ne suffit pas : une webcam occupée ou un
+    format refusé donne une caméra ouverte mais muette."""
+    end = time.monotonic() + (FIRST_FRAME if timeout is None else timeout)
+    while time.monotonic() < end:
+        ok, frame = cap.read()
+        if ok and frame is not None and frame.size:
+            return True
+        time.sleep(0.03)
+    return False
+
+
+def _try_open(index: int, api: int, w: int, h: int, fps: int):
+    """Ouvre la webcam avec une API vidéo : d'abord en mode rapide (MJPG, résolution voulue), puis avec les
+    réglages d'origine de la webcam si elle refuse ce mode. None si elle ne donne aucune image."""
+    for custom in (True, False):
+        cap = cv2.VideoCapture(index, api)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        if custom:
+            if api == getattr(cv2, "CAP_DSHOW", -1):
+                # avant la résolution, sinon DirectShow ignore le format (MJPG = plus d'images/s en USB)
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # toujours l'image la plus récente (moins de latence)
+        if _first_frame(cap):
+            return cap
+        cap.release()
+        log.info("Webcam %d (API %d) : aucune image en %s", index, api, "mode rapide" if custom else "mode d'origine")
+    return None
+
+
+def _open_any(index: int, w: int, h: int, fps: int):
+    for name, api in BACKENDS:
+        cap = _try_open(index, api, w, h, fps)
+        if cap is not None:
+            return cap, name
+    return None, ""
+
+
+def diagnose(index: int) -> CameraError:
+    """Pourquoi la webcam ne s'ouvre pas, en clair."""
+    generic = CameraError("failed", f"Impossible d'ouvrir la webcam n°{index}.")
+    if sys.platform != "win32":
+        return generic
+    try:
+        from . import camusers
+        blocked = camusers.camera_blocked()
+        if blocked:
+            return CameraError("denied", f"Windows bloque la webcam : {blocked}. Dans Paramètres › Confidentialité et "
+                                         "sécurité › Caméra, activez l'accès à la caméra et « Autoriser les applications "
+                                         "de bureau à accéder à votre caméra », puis relancez le suivi.")
+        users = camusers.find_camera_users()
+        if camusers.other_nova_holds_camera():
+            return CameraError("nova", "La webcam est déjà prise par une autre fenêtre de Nova (regardez aussi l'icône "
+                                       "près de l'horloge). Fermez-la ou cliquez sur « Libérer la webcam ».",
+                               [a for a in users if a.get("nova")])
+        busy = [a for a in users if a["in_use"]]
+        if busy:
+            names = ", ".join(dict.fromkeys(a["name"] for a in busy))
+            return CameraError("busy", f"La webcam est utilisée par : {names}. Fermez-la ou cliquez sur "
+                                       "« Libérer la webcam ».", busy)
+        guards = camusers.webcam_guards()
+    except Exception as e:  # noqa: BLE001
+        log.warning("Diagnostic webcam : %s", e)
+        return generic
+    msg = (f"Impossible d'ouvrir la webcam n°{index}, et aucune autre application ne l'utilise. Essayez : choisir "
+           "une autre caméra dans la liste ; débrancher puis rebrancher la webcam ; vérifier l'obturateur ou la touche "
+           "caméra du PC portable ; redémarrer le PC si une application a planté en la gardant.")
+    if guards:
+        msg += (f" Votre antivirus ({', '.join(guards)}) a une protection webcam : autorisez "
+                f"« {sys.executable} » dans ses réglages.")
+    return CameraError("failed", msg)
+
+
+def open_camera(index: int, w: int, h: int, fps: int, should_stop=lambda: False, on_wait=None,
+                wait_busy: float | None = 8.0, wait_unknown: float | None = None) -> tuple:
+    """Ouvre la webcam (DirectShow puis Media Foundation sous Windows) et vérifie qu'elle envoie des images.
+    - bloquée par Windows : erreur immédiate (attendre ne changerait rien) ;
+    - occupée (autre application, autre fenêtre de Nova) : nouvel essai pendant « wait_busy » secondes
+      (None = jusqu'à ce qu'elle se libère : c'est le mode « réserver la webcam ») ;
+    - raison inconnue : nouvel essai pendant « wait_unknown » secondes (une webcam qui vient d'être libérée met
+      parfois 1 à 2 s à redevenir disponible), puis essai des autres numéros : si le numéro choisi ne répond pas
+      (caméra virtuelle désinstallée, ordre des caméras changé…), la première webcam qui marche est utilisée.
+    Retourne (cap, nom de l'API, numéro réellement ouvert). Lève CameraError."""
+    start = time.monotonic()
+    wait_unknown = WAIT_UNKNOWN if wait_unknown is None else wait_unknown
+    delay, probed = 0.4, False
+    while True:
+        cap, api = _open_any(index, w, h, fps)
+        if cap is not None:
+            return cap, api, index
+        gc.collect()          # une ancienne capture oubliée en mémoire rend la webcam
+        err = diagnose(index)
+        if err.code == "denied":
+            raise err
+        waited = time.monotonic() - start
+        if err.code == "failed" and waited >= wait_unknown:
+            if not probed:
+                probed = True
+                for j in range(PROBE_MAX):
+                    if j == index or should_stop():
+                        continue
+                    cap, api = _open_any(j, w, h, fps)
+                    if cap is not None:
+                        log.warning("Webcam %d inutilisable : webcam %d utilisée à la place", index, j)
+                        return cap, api, j
+            raise err
+        if err.code != "failed" and wait_busy is not None and waited >= wait_busy:
+            raise err
+        if on_wait:
+            on_wait(err)
+        if not _sleep(delay, should_stop):
+            raise CameraError("stopped", "Ouverture de la webcam annulée.")
+        delay = min(delay * 1.5, 3.0)
+
+
+class CameraHub:
+    """La webcam de Nova. Une seule session de suivi à la fois : une nouvelle session attend que la précédente
+    ait rendu la webcam (avant, un redémarrage du suivi tombait sur sa propre webcam encore ouverte et affichait
+    « webcam introuvable ou déjà utilisée » alors qu'aucune autre application ne l'utilisait).
+    Mode « réserver » : la webcam reste ouverte entre deux sessions de suivi et jusqu'à la fermeture de Nova,
+    si bien qu'aucune autre application ne peut la prendre pendant que Nova est lancé."""
+
+    def __init__(self):
+        self._owner = threading.Lock()      # tenu par la session de suivi en cours
+        self._lock = threading.RLock()      # protège _cap
+        self._cap = None
+        self._key = None
+        self._flag = None
+        self.backend = ""
+        self.index = None
+        atexit.register(self.shutdown)
+
+    def acquire(self, should_stop, timeout: float = 15.0) -> bool:
+        end = time.monotonic() + timeout
+        while not self._owner.acquire(timeout=0.1):
+            if should_stop() or time.monotonic() > end:
+                return False
+        return True
+
+    def open(self, key: tuple, opener):
+        """Webcam déjà ouverte avec les mêmes réglages : réutilisée telle quelle ; sinon ouverte par opener()."""
+        with self._lock:
+            if self._cap is not None and self._key == key and self._cap.isOpened():
+                return self._cap
+            self._close()
+            cap, backend, index = opener()
+            self._cap, self._key, self.backend, self.index = cap, (index,) + tuple(key[1:]), backend, index
+            if sys.platform == "win32":
+                try:
+                    from . import camusers
+                    self._flag = camusers.flag_camera_held()
+                except Exception:  # noqa: BLE001
+                    self._flag = None
+            log.info("Webcam %s ouverte (%s, %dx%d)", index, backend,
+                     int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+            return cap
+
+    def give_back(self, keep: bool) -> None:
+        """Fin d'une session de suivi : la webcam est gardée (mode réserver) ou rendue à Windows."""
+        if not keep:
+            self.close()
+        self._owner.release()
+
+    def close(self) -> None:
+        with self._lock:
+            self._close()
+
+    def _close(self):
+        if self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:  # noqa: BLE001
+                pass
+            log.info("Webcam rendue à Windows")
+        self._cap = self._key = None
+        if self._flag is not None:
+            try:
+                from . import camusers
+                camusers.release_flag(self._flag)
+            except Exception:  # noqa: BLE001
+                pass
+            self._flag = None
+
+    @property
+    def is_open(self) -> bool:
+        return self._cap is not None
+
+    def shutdown(self) -> None:
+        """Rend la webcam si aucune session de suivi ne l'utilise (fermeture de Nova, réservation désactivée)."""
+        if self._owner.acquire(timeout=2.0):
+            try:
+                self.close()
+            finally:
+                self._owner.release()
+
+
+CAMERA = CameraHub()
+
+
+def release_camera() -> None:
+    """Rend la webcam à Windows quand le suivi est arrêté (à appeler si la réservation est désactivée en cours de route)."""
+    CAMERA.shutdown()
+
+
 class CameraWorker(QThread):
     frame_ready = Signal(QImage)
     state_ready = Signal(dict)
     status = Signal(str, str)      # (code, message lisible)
     stats = Signal(float, float)   # fps, latence ms
+    _privacy_shown = False         # la page « Confidentialité > Caméra » n'est ouverte qu'une fois
 
     def __init__(self, profile: dict):
         super().__init__()
@@ -574,54 +821,139 @@ class CameraWorker(QThread):
         self._running = True
         self.preview_enabled = True
         self.calibrate_requested = False
+        self.error_code = ""       # dernier problème de webcam : denied | nova | busy | failed
+        self.blockers = []         # applications qui occupent la webcam (pour « Libérer la webcam »)
 
     def stop(self):
         self._running = False
 
-    def run(self):
+    def _stopping(self) -> bool:
+        return not self._running
+
+    def _settings(self) -> tuple[int, int, int, int]:
         cam_cfg = self.profile["camera"]
-        idx = int(cam_cfg["index"])
-        self.status.emit("starting", f"Ouverture de la caméra {idx}…")
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(idx)
-        if not cap.isOpened():
-            self.status.emit("error", "Webcam introuvable ou déjà utilisée par une autre application.")
-            return
         try:
-            w, h = (int(x) for x in cam_cfg["resolution"].split("x"))
+            idx = int(cam_cfg.get("index", 0))
+        except (TypeError, ValueError):
+            idx = 0
+        try:
+            w, h = (int(x) for x in str(cam_cfg.get("resolution", "640x480")).lower().split("x"))
         except ValueError:
             w, h = 640, 480
         if self.profile["tracking"].get("body") and w * h < 1280 * 720:
             w, h = 1280, 720     # mains petites dans l'image : la HD améliore nettement leur détection
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))  # plus d'images/s sur la plupart des webcams USB
-        cap.set(cv2.CAP_PROP_FPS, max(30, int(cam_cfg.get("fps_limit", 30))))
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # toujours l'image la plus récente (moins de latence)
+        return idx, w, h, max(30, int(cam_cfg.get("fps_limit", 30)))
+
+    def _fail(self, e: CameraError):
+        self.error_code, self.blockers = e.code, e.apps
+        log.warning("Webcam : %s", e)
+        self.status.emit("error", str(e))
+        if e.code == "denied" and not CameraWorker._privacy_shown:
+            CameraWorker._privacy_shown = True
+            try:
+                from . import camusers
+                camusers.open_privacy_settings()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _open(self, idx: int, w: int, h: int, fps: int):
+        """Ouvre (ou reprend) la webcam ; si elle est occupée, attend qu'elle se libère (mode réserver) et la
+        libère d'office si l'option « auto_free » est activée. Lève CameraError."""
+        cam_cfg = self.profile["camera"]
+        reserve = bool(cam_cfg.get("reserve", True))
+        freed, last = set(), [""]
+
+        def waiting(err: CameraError):
+            self.blockers = err.apps
+            if err.code in ("busy", "nova"):
+                todo = [a for a in err.apps if (a["exe"], a["name"]) not in freed]
+                if cam_cfg.get("auto_free") and todo:
+                    from . import camusers
+                    freed.update((a["exe"], a["name"]) for a in todo)
+                    msg = "Libération de la webcam : " + " ; ".join(camusers.close_apps(todo))
+                else:
+                    msg = f"{err} Nova prendra la webcam dès qu'elle sera libre…" if reserve else f"{err} Nouvel essai…"
+            else:
+                msg = f"Ouverture de la caméra {idx}… (nouvel essai)"
+            if msg != last[0]:
+                last[0] = msg
+                self.status.emit("starting", msg)
+
+        cap = CAMERA.open((idx, w, h, fps), lambda: open_camera(
+            idx, w, h, fps, should_stop=self._stopping, on_wait=waiting, wait_busy=None if reserve else 8.0))
+        if CAMERA.index is not None and CAMERA.index != idx:
+            self.status.emit("starting", f"La caméra {idx} ne répond pas : Nova utilise la caméra {CAMERA.index}.")
+            cam_cfg["index"] = CAMERA.index
+        self.error_code, self.blockers = "", []
+        return cap
+
+    def _reconnect(self, idx: int, w: int, h: int, fps: int):
+        """La webcam ne renvoie plus d'image (câble, mise en veille USB, autre application) : on la rouvre."""
+        self.status.emit("starting", "La webcam ne répond plus : reconnexion…")
+        CAMERA.close()
+        try:
+            cap = self._open(idx, w, h, fps)
+        except CameraError as e:
+            if e.code != "stopped":
+                self._fail(e)
+            return None
+        self.status.emit("running", "Webcam active")
+        return cap
+
+    def run(self):
+        idx, w, h, fps = self._settings()
+        reserve = bool(self.profile["camera"].get("reserve", True))
+        self.status.emit("starting", f"Ouverture de la caméra {idx}…")
         try:
             tracker = FaceTracker()
         except Exception as e:  # noqa: BLE001
             log.exception("Tracking indisponible")
             self.status.emit("error", f"Tracking indisponible : {e}")
-            cap.release()
             return
+        if not CAMERA.acquire(self._stopping):
+            tracker.close()
+            if self._running:
+                self.status.emit("error", "La session de suivi précédente ne rend pas la webcam. Réessayez dans quelques secondes.")
+            return
+        try:
+            cap = self._open(idx, w, h, fps)
+        except CameraError as e:
+            CAMERA.give_back(keep=False)
+            tracker.close()
+            if e.code != "stopped":
+                self._fail(e)
+            return
+        except Exception as e:  # noqa: BLE001
+            CAMERA.give_back(keep=False)
+            tracker.close()
+            log.exception("Ouverture de la webcam")
+            self.status.emit("error", f"Erreur d'ouverture de la webcam : {e}")
+            return
+        idx = CAMERA.index if CAMERA.index is not None else idx
+        cam_cfg = self.profile["camera"]
         body = None
+        healthy = True
         self.status.emit("running", "Webcam active")
         fails, frames, t_fps, last_face = 0, 0, time.monotonic(), time.monotonic()
         face_lost = True
         last_preview = 0.0
+        latency = 0.0
         try:
             while self._running:
                 t0 = time.monotonic()
                 ok, frame = cap.read()
-                if not ok:
+                if not ok or frame is None:
                     fails += 1
                     if fails > 30:
-                        self.status.emit("error", "La webcam ne renvoie plus d'image (débranchée ?).")
-                        break
-                    self.msleep(30)
+                        cap = self._reconnect(idx, w, h, fps)
+                        if cap is None:
+                            healthy = False
+                            if self._running and self.error_code not in ("busy", "nova", "denied", "failed"):
+                                self.status.emit("error", "La webcam ne renvoie plus d'image (débranchée ?).")
+                            break
+                        fails = 0
+                    else:
+                        self.msleep(30)
                     continue
                 fails = 0
                 t_proc = time.perf_counter()   # latence = traitement seul (sans l'attente de l'image suivante)
@@ -682,10 +1014,12 @@ class CameraWorker(QThread):
                 if rest > 0:
                     self.msleep(int(rest * 1000))
         except Exception as e:  # noqa: BLE001
+            healthy = False
             log.exception("Erreur dans la boucle de capture")
             self.status.emit("error", f"Erreur de capture : {e}")
         finally:
-            cap.release()
+            # mode « réserver » : la webcam reste à Nova jusqu'à sa fermeture (aucune autre application ne la prend)
+            CAMERA.give_back(keep=healthy and reserve and bool(cam_cfg.get("reserve", True)))
             tracker.close()
             if body is not None:
                 body.stop()

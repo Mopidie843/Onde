@@ -14,6 +14,7 @@ NORMAL_PRIORITY_CLASS = 0x20
 PROCESS_POWER_THROTTLING = 4
 THROTTLE_EXECUTION_SPEED = 0x1
 THROTTLE_IGNORE_TIMER_RESOLUTION = 0x4
+_timer_on = False
 
 
 class _Throttling(ctypes.Structure):
@@ -36,14 +37,15 @@ def _kernel32():
 
 def boost(enabled: bool = True) -> dict:
     """Applique (ou retire) les réglages anti-bridage au processus courant. Retourne ce qui a réussi."""
+    global _timer_on
     result = {"priority": False, "no_ecoqos": False, "timer": False}
     if sys.platform != "win32":
         return result
     k32 = _kernel32()
     proc = k32.GetCurrentProcess()
     result["priority"] = bool(k32.SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS if enabled else NORMAL_PRIORITY_CLASS))
-    st = _Throttling(1, THROTTLE_EXECUTION_SPEED | THROTTLE_IGNORE_TIMER_RESOLUTION, 0 if enabled else
-                     THROTTLE_EXECUTION_SPEED | THROTTLE_IGNORE_TIMER_RESOLUTION)
+    # activé : bridage refusé ; désactivé : Windows reprend la main (ControlMask = 0), sans forcer le mode « efficacité »
+    st = _Throttling(1, (THROTTLE_EXECUTION_SPEED | THROTTLE_IGNORE_TIMER_RESOLUTION) if enabled else 0, 0)
     try:
         result["no_ecoqos"] = bool(k32.SetProcessInformation(proc, PROCESS_POWER_THROTTLING, ctypes.byref(st),
                                                              ctypes.sizeof(st)))
@@ -51,7 +53,11 @@ def boost(enabled: bool = True) -> dict:
         pass
     try:
         winmm = ctypes.windll.winmm
-        result["timer"] = (winmm.timeBeginPeriod(1) if enabled else winmm.timeEndPeriod(1)) == 0
+        if enabled and not _timer_on:
+            _timer_on = winmm.timeBeginPeriod(1) == 0
+        elif not enabled and _timer_on:
+            _timer_on = winmm.timeEndPeriod(1) != 0      # chaque timeBeginPeriod doit avoir un seul timeEndPeriod
+        result["timer"] = _timer_on == enabled
     except OSError:
         pass
     log.info("Anti-bridage (jeux) %s : %s", "activé" if enabled else "désactivé", result)

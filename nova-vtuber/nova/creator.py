@@ -128,6 +128,10 @@ def _image_bytes(js, bin_, img_idx) -> bytes:
 
 def _add_image(js, bin_, png: bytes, sampler=None) -> int:
     """Ajoute une image PNG (et sa texture) au fichier ; retourne l'index de texture."""
+    for k in ("bufferViews", "images", "textures"):
+        js.setdefault(k, [])
+    if not js.get("buffers"):
+        js["buffers"] = [{"byteLength": len(bin_)}]
     bin_ += b"\0" * (-len(bin_) % 4)
     js["bufferViews"].append({"buffer": 0, "byteOffset": len(bin_), "byteLength": len(png)})
     bin_ += png
@@ -161,14 +165,23 @@ def hsv_shift_linear(lin: np.ndarray, h: float, s: float, v: float) -> np.ndarra
     return np.power(np.clip(rgb, 0, 1), 2.2)
 
 
-def recolor_texture(png: bytes, factor_lin, h, s, v) -> bytes:
+def _decode(png: bytes):
+    """Image -> (BGR[A] en flottants 0..1, ou None). Gère les PNG 16 bits et en niveaux de gris."""
     arr = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
     if arr is None:
-        raise ValueError("texture illisible")
+        return None
     if arr.ndim == 2:
         arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
-    alpha = arr[..., 3:4] if arr.shape[2] == 4 else None
-    rgb = arr[..., :3][..., ::-1].astype(np.float32) / 255.0
+    peak = float(np.iinfo(arr.dtype).max) if arr.dtype.kind in "ui" else 1.0
+    return arr.astype(np.float32) / peak
+
+
+def recolor_texture(png: bytes, factor_lin, h, s, v) -> bytes:
+    arr = _decode(png)
+    if arr is None:
+        raise ValueError("texture illisible")
+    alpha = np.clip(arr[..., 3:4] * 255 + 0.5, 0, 255).astype(np.uint8) if arr.shape[2] == 4 else None
+    rgb = arr[..., :3][..., ::-1]
     lin = srgb_to_lin(rgb) * np.asarray(factor_lin[:3], np.float32)
     out = lin_to_srgb(hsv_shift_linear(lin, h, s, v))
     out8 = np.clip(out * 255 + 0.5, 0, 255).astype(np.uint8)[..., ::-1]
@@ -182,15 +195,13 @@ def recolor_texture(png: bytes, factor_lin, h, s, v) -> bytes:
 
 def texture_avg_srgb(png: bytes) -> np.ndarray:
     """Couleur moyenne (sRGB 0..1) des pixels opaques, comme averageColor() du rendu (vignette 24x24)."""
-    arr = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+    arr = _decode(png)
     if arr is None:
         return np.ones(3)
-    if arr.ndim == 2:
-        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
     small = cv2.resize(arr, (24, 24), interpolation=cv2.INTER_AREA)
-    rgb = small[..., :3][..., ::-1].reshape(-1, 3).astype(np.float64) / 255
+    rgb = small[..., :3][..., ::-1].reshape(-1, 3).astype(np.float64)
     if small.shape[2] == 4:
-        rgb = rgb[small[..., 3].reshape(-1) > 128]
+        rgb = rgb[small[..., 3].reshape(-1) > 128 / 255]
     return rgb.mean(axis=0) if len(rgb) else np.ones(3)
 
 

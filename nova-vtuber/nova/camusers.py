@@ -1,16 +1,23 @@
-"""Trouver et fermer les applications qui occupent la webcam (une webcam ne peut servir qu'à une app à la fois).
+"""Trouver et fermer les applications qui occupent la webcam (une webcam ne peut servir qu'à une app à la fois),
+et diagnostiquer pourquoi elle ne s'ouvre pas.
 
 Sources : 1) le registre de confidentialité de Windows (applications qui utilisent la caméra EN CE MOMENT) ;
-          2) les applications ouvertes connues pour utiliser une webcam (OBS, Discord, Teams, Zoom, VTube Studio…).
-Rien n'est fermé sans confirmation : fermeture normale d'abord, puis forcée si l'application ne répond pas."""
+          2) les applications ouvertes connues pour utiliser une webcam (OBS, Discord, Teams, Zoom, VTube Studio…) ;
+          3) un marqueur Windows posé par Nova tant qu'il tient la webcam (repère une autre fenêtre de Nova).
+Rien n'est fermé sans confirmation (sauf si l'option « libérer automatiquement » est activée dans le profil) :
+fermeture normale d'abord, puis forcée si l'application ne répond pas."""
+import ctypes
 import logging
 import os
 import subprocess
 import sys
 import time
 import winreg
+from ctypes import wintypes
 
 import psutil
+
+from .settings import ROOT
 
 log = logging.getLogger("nova.camusers")
 KNOWN = {
@@ -26,12 +33,23 @@ KNOWN = {
     "logi capture.exe": "Logi Capture", "camerahub.exe": "Camera Hub",
 }
 PACKAGED = {"microsoft.windowscamera": "windowscamera.exe", "msteams": "ms-teams.exe"}
+NOVA_EXES = {"novavtuber.exe", "nova vtuber.exe", "nova-vtuber.exe", "nova.exe"}
+# antivirus dont la « protection webcam » peut bloquer Nova sans rien afficher
+WEBCAM_GUARDS = {
+    "avp.exe": "Kaspersky", "avpui.exe": "Kaspersky", "ekrn.exe": "ESET", "egui.exe": "ESET",
+    "avastsvc.exe": "Avast", "avastui.exe": "Avast", "avgsvc.exe": "AVG", "avgui.exe": "AVG",
+    "bdagent.exe": "Bitdefender", "bdservicehost.exe": "Bitdefender", "vsserv.exe": "Bitdefender",
+    "nortonsecurity.exe": "Norton", "norton360.exe": "Norton",
+}
 REG = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+FLAG_NAME = "Local\\NovaVTuber.webcam"        # présent tant qu'une fenêtre de Nova tient la webcam
+PRIVACY_URI = "ms-settings:privacy-webcam"
 
 
-def _in_use_from_registry() -> set[str]:
-    """Exécutables (minuscules) signalés par Windows comme utilisant la caméra maintenant."""
-    found = set()
+def _in_use_from_registry() -> tuple[set[str], set[str]]:
+    """Ce que Windows signale comme utilisant la caméra maintenant :
+    (exécutables en minuscules, familles d'applications du Microsoft Store en minuscules)."""
+    exes, packages = set(), set()
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
         for sub, packaged in ((REG + r"\NonPackaged", False), (REG, True)):
             try:
@@ -56,12 +74,25 @@ def _in_use_from_registry() -> set[str]:
                         continue
                     if start and not stop:
                         if packaged:
-                            fam = name.split("_")[0].lower()
-                            if fam in PACKAGED:
-                                found.add(PACKAGED[fam])
+                            fam = name.lower()
+                            packages.add(fam)
+                            if fam.split("_")[0] in PACKAGED:
+                                exes.add(PACKAGED[fam.split("_")[0]])
                         else:
-                            found.add(name.replace("#", "\\").lower())
-    return found
+                            exes.add(name.replace("#", "\\").lower())
+    return exes, packages
+
+
+def _packaged_match(exe: str, packages: set[str]) -> bool:
+    """Exécutable d'une application du Store (…\\WindowsApps\\<nom>_<version>_<archi>__<éditeur>\\…) signalée par Windows."""
+    if "\\windowsapps\\" not in exe:
+        return False
+    folder = exe.split("\\windowsapps\\", 1)[1].split("\\", 1)[0]
+    for fam in packages:
+        name, _, publisher = fam.rpartition("_")
+        if name and folder.startswith(name + "_") and folder.endswith("_" + publisher):
+            return True
+    return False
 
 
 def _protected_pids() -> set[int]:
@@ -70,15 +101,31 @@ def _protected_pids() -> set[int]:
     try:
         pids |= {c.pid for c in me.children(recursive=True)}
         if me.parent():
-            pids.add(me.parent().pid)       # lanceur (python.exe de l'environnement virtuel)
+            pids.add(me.parent().pid)       # lanceur (python.exe de l'environnement virtuel, ou chargeur du .exe)
     except psutil.Error:
         pass
     return pids
 
 
+def _is_other_nova(p, name: str, cmd: str) -> bool:
+    """Autre fenêtre de Nova (version .exe ou lancée depuis les sources), y compris celle cachée près de l'horloge."""
+    if name in NOVA_EXES:
+        return True
+    if getattr(sys, "frozen", False) and name == os.path.basename(sys.executable).lower():
+        return True
+    if not (name.startswith("python") and "main.py" in cmd):
+        return False
+    if "vtuber" in cmd or str(ROOT).lower() in cmd:
+        return True
+    try:
+        return os.path.normcase(p.cwd()) == os.path.normcase(str(ROOT))
+    except (psutil.Error, OSError):
+        return False
+
+
 def find_camera_users() -> list[dict]:
     """Liste [{name, exe, pids, in_use, detail}] des applications à fermer potentiellement."""
-    in_use = _in_use_from_registry()
+    in_use, packages = _in_use_from_registry()
     protected = _protected_pids()
     windir = os.environ.get("WINDIR", r"C:\Windows").lower()
     apps: dict = {}
@@ -90,16 +137,16 @@ def find_camera_users() -> list[dict]:
             exe = (p.info["exe"] or "").lower()
             if exe.startswith(windir):
                 continue                            # composants de Windows : jamais fermés
-            using_now = exe in in_use or name in in_use
+            using_now = exe in in_use or name in in_use or _packaged_match(exe, packages)
             known = name in KNOWN
             cmd = " ".join(p.info["cmdline"] or []).lower()
-            other_nova = name == "novavtuber.exe" or (name.startswith("python") and "main.py" in cmd and "vtuber" in cmd)
+            other_nova = _is_other_nova(p, name, cmd)
             if not (using_now or known or other_nova):
                 continue
             key = "nova" if other_nova else (exe or name)
             label = "Nova VTuber (autre fenêtre ouverte)" if other_nova else KNOWN.get(name, os.path.basename(p.info["name"] or exe))
             app = apps.setdefault(key, {"name": label,
-                                        "exe": exe, "pids": [], "in_use": False, "detail": ""})
+                                        "exe": exe, "pids": [], "in_use": False, "detail": "", "nova": other_nova})
             app["pids"].append(p.pid)
             app["in_use"] = app["in_use"] or using_now
             if name.startswith("python") and p.info["cmdline"]:
@@ -131,6 +178,93 @@ def close_apps(apps: list[dict], grace: float = 3.0) -> list[str]:
     return report
 
 
+# ---------------------------------------------------------------- diagnostic
+def _reg_value(hive, path: str, name: str):
+    try:
+        with winreg.OpenKey(hive, path) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except OSError:
+        return None
+
+
+def camera_blocked() -> str:
+    """Raison lisible si Windows interdit la caméra aux logiciels comme Nova, sinon ""."""
+    hklm, hkcu = winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER
+    if _reg_value(hklm, r"SOFTWARE\Policies\Microsoft\Camera", "AllowCamera") == 0:
+        return "la caméra est désactivée par une stratégie de l'administrateur du PC"
+    if _reg_value(hklm, r"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy", "LetAppsAccessCamera") == 2:
+        return "l'accès à la caméra est interdit par une stratégie de l'administrateur du PC"
+    if str(_reg_value(hklm, REG, "Value")).lower() == "deny":
+        return "« Accès à la caméra » est désactivé pour tout le PC"
+    if str(_reg_value(hkcu, REG, "Value")).lower() == "deny":
+        return "« Accès à la caméra » est désactivé"
+    if str(_reg_value(hkcu, REG + r"\NonPackaged", "Value")).lower() == "deny":
+        return "« Autoriser les applications de bureau à accéder à votre caméra » est désactivé"
+    return ""
+
+
+def open_privacy_settings() -> None:
+    """Ouvre la page Paramètres > Confidentialité > Caméra de Windows."""
+    try:
+        os.startfile(PRIVACY_URI)  # type: ignore[attr-defined]
+    except OSError as e:
+        log.warning("Paramètres de confidentialité : %s", e)
+
+
+def webcam_guards() -> list[str]:
+    """Antivirus ouverts qui ont une « protection webcam » (ils peuvent bloquer Nova en silence)."""
+    found = set()
+    for p in psutil.process_iter(["name"]):
+        n = (p.info["name"] or "").lower()
+        if n in WEBCAM_GUARDS:
+            found.add(WEBCAM_GUARDS[n])
+    return sorted(found)
+
+
+# ---------------------------------------------------------------- marqueur « Nova tient la webcam »
+def _k32():
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.OpenMutexW.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+    return k32
+
+
+def flag_camera_held():
+    """Pose le marqueur (à garder tant que la webcam est ouverte). Retourne un jeton pour release_flag()."""
+    try:
+        return _k32().CreateMutexW(None, False, FLAG_NAME) or None
+    except (OSError, AttributeError):
+        return None
+
+
+def release_flag(token) -> None:
+    if token:
+        try:
+            _k32().CloseHandle(token)
+        except (OSError, AttributeError):
+            pass
+
+
+def other_nova_holds_camera() -> bool:
+    """Vrai si une autre fenêtre de Nova a la webcam (à appeler quand cette fenêtre-ci ne l'a pas)."""
+    try:
+        k32 = _k32()
+        h = k32.OpenMutexW(0x00100000, False, FLAG_NAME)     # SYNCHRONIZE
+    except (OSError, AttributeError):
+        return False
+    if h:
+        k32.CloseHandle(h)
+        return True
+    return False
+
+
 if __name__ == "__main__" and sys.platform == "win32":
+    print("Blocage Windows :", camera_blocked() or "aucun")
+    print("Antivirus avec protection webcam :", ", ".join(webcam_guards()) or "aucun")
+    print("Autre fenêtre de Nova avec la webcam :", other_nova_holds_camera())
     for a in find_camera_users():
         print(a)

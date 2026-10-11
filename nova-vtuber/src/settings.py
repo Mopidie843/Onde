@@ -23,7 +23,8 @@ DEFAULT_PROFILE = {
     "avatar": "Fumiriya - Mec anime (VRoid).vrm",
     # reserve : Nova garde la webcam tant qu'il est ouvert (aucune autre application ne peut la prendre) ;
     # auto_free : si la webcam est occupée, ferme d'office les applications que Windows signale comme l'utilisant
-    "camera": {"index": 0, "resolution": "640x480", "fps_limit": 30, "mirror": True, "reserve": True, "auto_free": False},
+    "camera": {"index": 0, "resolution": "640x480", "fps_limit": 30, "mirror": True, "reserve": True, "auto_free": False,
+               "hd_tracking": True},
     "tracking": {
         "head": 1.0, "eyes": 1.0, "mouth": 1.0, "smoothing": 0.5, "deadzone": 0.5, "body": False,
         "eye_sync": True, "iris": True, "lean": 1.0, "blink": 1.0, "autostart": False, "auto_calibrate": True,

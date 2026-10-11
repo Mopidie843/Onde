@@ -76,6 +76,21 @@ EAR_A = (33, 133, (160, 158), (144, 153))
 EAR_B = (263, 362, (387, 385), (373, 380))
 
 
+def soft_zone(delta: float, dz: float) -> float:
+    """Zone morte douce : un petit écart (tremblement) est atténué progressivement au lieu d'être coupé net.
+    Avant, tout écart sous le seuil était ignoré puis rattrapé d'un coup : mouvements lents « en escalier »."""
+    a = abs(delta)
+    if dz <= 0 or a >= 2 * dz:
+        return delta
+    x = a / (2 * dz)
+    return math.copysign(2 * dz * (2 * x * x - x * x * x), delta)   # continue, sans à-coup à la sortie de la zone
+
+
+def eye_width(lms, eye, aspect: float = 1.0) -> float:
+    o, i = lms[eye[0]], lms[eye[1]]
+    return math.hypot((o.x - i.x) * aspect, o.y - i.y)
+
+
 def iris_gaze(lms, eye, aspect: float = 1.0) -> tuple[float, float] | None:
     """Position de l'iris dans l'œil (-1..1), plus précise que les blendshapes pour le regard.
     Vertical mesuré par rapport à la ligne des coins de l'œil (stable même quand les paupières bougent)."""
@@ -172,7 +187,7 @@ class FaceMapper:
             "tx": med([q[0] for q in pos]), "ty": med([q[1] for q in pos]), "tz": med([q[2] for q in pos]),
             "earL": med([e[0] for e in ears]), "earR": med([e[1] for e in ears])}
         self._open = [self.cfg["calibration"]["earL"] or None, self.cfg["calibration"]["earR"] or None]
-        self._auto, self.auto_calibrated, self.out = [], True, None
+        self._auto, self.auto_calibrated, self.out, self.filters = [], True, None, {}
         log.info("Calibrage automatique fait : %s", self.cfg["calibration"])
 
     def calibrate(self) -> bool:
@@ -188,6 +203,7 @@ class FaceMapper:
                                    "tx": tx, "ty": ty, "tz": tz, "earL": ears[0], "earR": ears[1]}
         self._open = [ears[0], ears[1]]
         self.out = None
+        self.filters = {}          # sinon le lissage repartirait de l'ancienne pose et glisserait vers la nouvelle
         return True
 
     def _blinks(self, g, lms, aspect, t) -> tuple[float, float, tuple]:
@@ -247,7 +263,10 @@ class FaceMapper:
         if c.get("iris", True):
             a, b = iris_gaze(lms, EYE_A, aspect), iris_gaze(lms, EYE_B, aspect)
             if a and b:
-                iris = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                # tête tournée : l'œil vu de profil (plus étroit à l'image) est bien moins fiable -> poids au carré
+                wa, wb = eye_width(lms, EYE_A, aspect) ** 2, eye_width(lms, EYE_B, aspect) ** 2
+                tot = (wa + wb) or 1.0
+                iris = ((a[0] * wa + b[0] * wb) / tot, (a[1] * wa + b[1] * wb) / tot)
         self.last_raw = {"yaw": yaw, "pitch": pitch, "roll": roll, "bs": bs, "iris": iris, "pos": pos, "ears": ears}
         if not self.auto_calibrated and c.get("auto_calibrate", True) and self._never_calibrated():
             self._auto_calibrate()
@@ -264,8 +283,7 @@ class FaceMapper:
             gx, gy = self._gaze_hold
         else:
             hx, hy = self._gaze_hold
-            if abs(gx - hx) < 0.025 and abs(gy - hy) < 0.025:   # micro-tremblements de l'œil ignorés
-                gx, gy = hx, hy
+            gx, gy = hx + soft_zone(gx - hx, 0.0125), hy + soft_zone(gy - hy, 0.0125)   # micro-tremblements atténués
             self._gaze_hold = (gx, gy)
 
         # --- buste : la position de la tête dans l'image fait pencher / avancer le corps
@@ -305,8 +323,8 @@ class FaceMapper:
         o = self.out
         min_cut = 0.3 + (1.0 - sm) ** 2 * 6.0     # lissage élevé = coupure basse à l'arrêt
         for k, v in target.items():
-            if k in ("yaw", "pitch", "roll") and abs(v - o.get(k, v)) < dz:
-                continue
+            if k in ("yaw", "pitch", "roll") and k in o:
+                v = o[k] + soft_zone(v - o[k], dz)
             if sm <= 0.01 or k not in o:
                 o[k] = v
                 continue
@@ -345,9 +363,10 @@ class FaceTracker:
         self.landmarker = vision.FaceLandmarker.create_from_options(opts)
         self._last_ts = 0
 
-    def detect(self, rgb: np.ndarray):
-        """Retourne (yaw, pitch, roll, blendshapes, landmarks) ou None si aucun visage."""
-        ts = max(int(time.monotonic() * 1000), self._last_ts + 1)
+    def detect(self, rgb: np.ndarray, t: float | None = None):
+        """Retourne (yaw, pitch, roll, blendshapes, landmarks) ou None si aucun visage.
+        t = heure de prise de l'image : le suivi interne de MediaPipe s'aligne sur le vrai rythme de la webcam."""
+        ts = max(int((time.monotonic() if t is None else t) * 1000), self._last_ts + 1)
         self._last_ts = ts
         img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         res = self.landmarker.detect_for_video(img, ts)
@@ -650,6 +669,16 @@ def _first_frame(cap, timeout: float | None = None) -> bool:
     return False
 
 
+def _measure_fps(cap, frames: int = 6) -> float:
+    t0 = time.monotonic()
+    got = 0
+    while got < frames and time.monotonic() - t0 < 1.5:
+        ok, _ = cap.read()
+        got += bool(ok)
+    dt = time.monotonic() - t0
+    return got / dt if dt > 0 else 999.0
+
+
 def _try_open(index: int, api: int, w: int, h: int, fps: int):
     """Ouvre la webcam avec une API vidéo : d'abord en mode rapide (MJPG, résolution voulue), puis avec les
     réglages d'origine de la webcam si elle refuse ce mode. None si elle ne donne aucune image."""
@@ -667,6 +696,11 @@ def _try_open(index: int, api: int, w: int, h: int, fps: int):
             cap.set(cv2.CAP_PROP_FPS, fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # toujours l'image la plus récente (moins de latence)
         if _first_frame(cap):
+            if custom and w * h > 640 * 480 and _measure_fps(cap) < 20:
+                # webcam qui ne tient pas la HD (souvent sans MJPG) : mieux vaut 30 i/s en 640x480 que 10 en HD
+                cap.release()
+                log.info("Webcam %d : HD trop lente, passage en 640x480", index)
+                return _try_open(index, api, 640, 480, fps)
             return cap
         cap.release()
         log.info("Webcam %d (API %d) : aucune image en %s", index, api, "mode rapide" if custom else "mode d'origine")
@@ -975,8 +1009,10 @@ class CameraWorker(QThread):
             w, h = (int(x) for x in str(cam_cfg.get("resolution", "640x480")).lower().split("x"))
         except ValueError:
             w, h = 640, 480
-        if self.profile["tracking"].get("body") and w * h < 1280 * 720:
-            w, h = 1280, 720     # mains petites dans l'image : la HD améliore nettement leur détection
+        if (self.profile["tracking"].get("body") or cam_cfg.get("hd_tracking", True)) and w * h < 1280 * 720:
+            # visage (et mains) plus grands en pixels : points du visage, iris et paupières nettement plus précis ;
+            # une webcam trop lente en HD est automatiquement ramenée à 640x480 (voir _try_open)
+            w, h = 1280, 720
         return idx, w, h, max(30, int(cam_cfg.get("fps_limit", 30)))
 
     def _fail(self, e: CameraError):
@@ -1116,7 +1152,7 @@ class CameraWorker(QThread):
                     frame = cv2.flip(frame, 1)
                 frame = light(frame, t_frame)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                det = tracker.detect(rgb)
+                det = tracker.detect(rgb, t_frame)
                 if det and not guard.ok(*det[:3]):
                     det = self._hold          # mesure aberrante isolée : on garde la précédente
                 arms, dots = None, []

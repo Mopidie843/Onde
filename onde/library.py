@@ -23,7 +23,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, ID3NoHeaderError
 from mutagen.mp4 import MP4, MP4Cover, MP4Tags
 
-from . import clean, config, covers, db, notify, settings
+from . import clean, config, covers, db, net, notify, settings
 
 log = logging.getLogger("onde.library")
 
@@ -40,7 +40,11 @@ status = {
     "added": 0, "updated": 0, "removed": 0, "errors": 0,
     "covers_running": 0, "covers_found": 0, "artists_running": False,
     "loudness_running": False, "gen": 0, "watching": False,
+    "offlineRoots": [],  # dossiers introuvables ou vidés d'un coup : leurs titres sont gardés
 }
+SAFE_MIN_TRACKS = 20     # en dessous, les titres disparus d'un dossier sont retirés sans se poser de question
+SAFE_MAX_GONE = 0.5      # au-delà de cette part des titres d'un dossier disparus d'un coup : disque absent ?
+ARTIST_RETRY = 7 * 86400  # artiste sans photo : nouvel essai au bout d'une semaine
 _scan_lock = threading.Lock()
 _wake = threading.Event()
 _stop = threading.Event()
@@ -232,10 +236,35 @@ APE_KEYS = {"title": "Title", "artist": "Artist", "album": "Album", "album_artis
             "track_no": "Track", "disc_no": "Disc", "year": "Year", "genre": "Genre"}
 ASF_KEYS = {"title": "Title", "artist": "Author", "album": "WM/AlbumTitle", "album_artist": "WM/AlbumArtist",
             "track_no": "WM/TrackNumber", "disc_no": "WM/PartOfSet", "year": "WM/Year", "genre": "WM/Genre"}
+ID3_FRAMES = {"title": "TIT2", "artist": "TPE1", "album": "TALB", "album_artist": "TPE2",
+              "track_no": "TRCK", "disc_no": "TPOS", "year": "TDRC", "genre": "TCON"}
+
+
+def _write_id3_frames(path: str, fields: dict) -> None:
+    """WAV / AIFF : mutagen n'a pas de variante « easy » pour ces formats (les tags sont des trames
+    ID3 brutes, `tags["title"] = [...]` y lève TypeError) : on écrit directement les trames."""
+    from mutagen import id3
+    f = mutagen.File(path)
+    if f is None:
+        raise ValueError("format non modifiable")
+    if f.tags is None:
+        f.add_tags()
+    for key, value in fields.items():
+        frame = ID3_FRAMES.get(key)
+        if not frame:
+            continue
+        value = "" if value is None else str(value).strip()
+        f.tags.delall(frame)
+        if value:
+            f.tags.add(getattr(id3, frame)(encoding=3, text=[value]))
+    f.save(v2_version=3)  # ID3v2.3, comme pour les MP3
 
 
 def write_tags(path: str, fields: dict) -> None:
     ext = Path(path).suffix.lower()
+    if ext in (".wav", ".aif", ".aiff"):
+        _write_id3_frames(path, fields)
+        return
     if ext in (".ape", ".wv", ".mpc", ".wma"):
         f = mutagen.File(path)
         if f is None:
@@ -276,7 +305,7 @@ def write_tags(path: str, fields: dict) -> None:
 
 def embed_cover(path: str, jpeg: bytes) -> None:
     ext = Path(path).suffix.lower()
-    if ext in (".mp3", ".aif", ".aiff"):
+    if ext in (".mp3", ".aif", ".aiff", ".wav"):
         if ext == ".mp3":
             try:
                 tags = ID3(path)
@@ -426,8 +455,51 @@ def _hidden(path: str, root: str) -> bool:
     return any(part.startswith(".") for part in rel.split(os.sep))
 
 
+def _under(path: str, root: str) -> bool:
+    return path.startswith(root + os.sep)
+
+
+def _online(root: Path) -> bool:
+    """Dossier présent et non vide. Un point de montage vide (disque ou clé USB démonté sur le Pi,
+    partage réseau coupé) ressemble à un dossier dont on aurait tout effacé : on le traite comme
+    absent, sinon la suppression des titres emporterait likes, playlists, écoutes et paroles."""
+    try:
+        return root.is_dir() and any(root.iterdir())
+    except OSError:
+        return False
+
+
+def _vanished_roots(existing: dict, missing: dict) -> list[str]:
+    """Dossiers dont la moitié des titres connus (ou plus) a disparu d'un coup : disque mal monté,
+    dossier renommé… Mieux vaut quelques titres fantômes qu'une bibliothèque vidée par erreur."""
+    out: list[str] = []
+    if not missing:
+        return out
+    for root in map(str, roots()):
+        known = sum(1 for p in existing if _under(p, root))
+        gone = sum(1 for p in missing if _under(p, root))
+        if known > SAFE_MIN_TRACKS and gone >= known * SAFE_MAX_GONE:
+            out.append(root)
+    return out
+
+
+def _report_offline(found: list[str]) -> None:
+    """Expose les dossiers hors ligne (/api/library/status) et prévient l'admin, une fois par disparition."""
+    new = [r for r in found if r not in status["offlineRoots"]]
+    status["offlineRoots"] = found
+    for root in new:
+        log.warning("dossier de musique introuvable ou vidé : %s — rien n'a été supprimé", root)
+        try:
+            notify.add("storage", "Dossier de musique introuvable — rien n'a été supprimé",
+                       f"{root} : vérifie que le disque est bien branché, tout reviendra au prochain scan. "
+                       "Fichiers supprimés exprès ? Lance « Scan complet » dans les Réglages.", "#/settings")
+        except Exception:
+            log.exception("notification de dossier introuvable")
+
+
 def scan(full: bool = False) -> dict:
-    """Scan incrémental : ne relit que les fichiers nouveaux ou modifiés."""
+    """Scan incrémental : ne relit que les fichiers nouveaux ou modifiés. `full` relit tout, et retire
+    aussi les titres d'un dossier dont plus de la moitié a disparu (suppression voulue)."""
     if not _scan_lock.acquire(blocking=False):
         return status
     try:
@@ -437,9 +509,8 @@ def scan(full: bool = False) -> dict:
         todo: list[tuple[str, os.stat_result, object]] = []
         offline_roots: list[str] = []
         for root in roots():
-            extra = root != config.MUSIC_DIR
-            if not root.is_dir() or (extra and not any(root.iterdir())):
-                offline_roots.append(str(root))  # disque absent : on ne supprime rien
+            if not _online(root):
+                offline_roots.append(str(root))  # disque absent ou vide : on ne supprime rien
                 continue
             for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
@@ -457,7 +528,7 @@ def scan(full: bool = False) -> dict:
                         continue
                     todo.append((p, st, row))
         missing = {path: row for path, row in existing.items()
-                   if path not in seen and not any(path.startswith(r + os.sep) for r in offline_roots)}
+                   if path not in seen and not any(_under(path, r) for r in offline_roots)}
         moved_by_fp = {row["fp"]: row for row in missing.values() if row["fp"]}
         status["scan_total"] = len(todo)
         folder_cache: dict = {}
@@ -488,6 +559,10 @@ def scan(full: bool = False) -> dict:
             status["scan_done"] = i + 1
         if conn.in_transaction:
             conn.execute("COMMIT")
+        vanished = [] if full else _vanished_roots(existing, missing)  # (déplacements déjà retrouvés)
+        if vanished:
+            missing = {p: r for p, r in missing.items() if not any(_under(p, v) for v in vanished)}
+        _report_offline([r for r in offline_roots + vanished if any(_under(p, r) for p in existing)])
         if missing:
             with db.tx():
                 db.many("DELETE FROM tracks WHERE id=?", [(r["id"],) for r in missing.values()])
@@ -720,12 +795,14 @@ def fetch_artist_images(force: bool = False) -> int:
     found = 0
     try:
         known = {r["key"]: r for r in db.q("SELECT * FROM artists")}
+        retry_before = time.time() - ARTIST_RETRY
         for name in artist_names():
             if _stop.is_set() or not settings.get("artist_images"):
                 break
             key = db.norm(name)
             row = known.get(key)
-            if key in SKIP_ARTISTS or (row and (row["image_id"] or row["locked"] or (row["tried"] and not force))):
+            recent = row and row["tried"] and row["tried"] > retry_before  # essayé il y a moins d'une semaine
+            if key in SKIP_ARTISTS or (row and (row["image_id"] or row["locked"] or (recent and not force))):
                 continue
             cid = None
             try:
@@ -733,9 +810,10 @@ def fetch_artist_images(force: bool = False) -> int:
                 if url:
                     cid = covers.store_cover(covers.fetch_image(url))
             except Exception as exc:
+                if net.is_offline(exc):  # pas d'Internet : rien n'est marqué, on réessaiera plus tard
+                    log.info("photos d'artistes : réseau indisponible (%s), nouvel essai plus tard", exc)
+                    break
                 log.info("photo de %s introuvable : %s", name, exc)
-                if "timed out" in str(exc) or "Tunnel" in str(exc) or "Name or service" in str(exc):
-                    break  # pas d'Internet : on réessaiera plus tard
             db.x("INSERT OR REPLACE INTO artists(key, name, image_id, locked, tried) VALUES(?,?,?,0,?)",
                  key, name, cid, time.time())
             if cid:
@@ -975,28 +1053,40 @@ def auto_cover_album(album_id: int, force: bool) -> bool:
     album = db.q1("SELECT * FROM albums WHERE id=?", album_id)
     if not album or (album["cover_tried"] and not force):
         return False
-    db.x("UPDATE albums SET cover_tried=1 WHERE id=?", album_id)
     embed = settings.get("embed_covers")
-    found = False
-    if album["name"] == config.SINGLES:
-        for t in db.q("SELECT id, title, artist FROM tracks WHERE album_id=? AND cover_id IS NULL", album_id):
-            res = covers.search_online(f"{t['artist']} {t['title']}", "song", 8)["results"]
-            best = covers.best_match(res, t["title"], t["artist"], "song")
+    found = offline = False
+    try:
+        if album["name"] == config.SINGLES:
+            for t in db.q("SELECT id, title, artist FROM tracks WHERE album_id=? AND cover_id IS NULL", album_id):
+                res = covers.search_online(f"{t['artist']} {t['title']}", "song", 8)
+                if res.get("offline"):
+                    offline = True
+                    break
+                best = covers.best_match(res["results"], t["title"], t["artist"], "song")
+                if best:
+                    cid = covers.store_cover(covers.fetch_image(best["url"]))
+                    if cid:
+                        set_track_cover(t["id"], cid, embed)
+                        found = True
+                time.sleep(0.4)
+        elif not album["cover_id"] or force:
+            query = album["name"] if album["artist"] == config.UNKNOWN_ARTIST else f"{album['artist']} {album['name']}"
+            res = covers.search_online(query, "album", 10)
+            offline = bool(res.get("offline"))
+            best = covers.best_match(res["results"], album["name"], album["artist"], "album")
             if best:
                 cid = covers.store_cover(covers.fetch_image(best["url"]))
                 if cid:
-                    set_track_cover(t["id"], cid, embed)
+                    set_album_cover(album_id, cid, embed, lock=False)
                     found = True
-            time.sleep(0.4)
-    elif not album["cover_id"] or force:
-        query = album["name"] if album["artist"] == config.UNKNOWN_ARTIST else f"{album['artist']} {album['name']}"
-        res = covers.search_online(query, "album", 10)["results"]
-        best = covers.best_match(res, album["name"], album["artist"], "album")
-        if best:
-            cid = covers.store_cover(covers.fetch_image(best["url"]))
-            if cid:
-                set_album_cover(album_id, cid, embed, lock=False)
-                found = True
+    except Exception as exc:  # (image refusée, coupure pendant le téléchargement…)
+        offline = net.is_offline(exc)
+        if not offline:
+            log.warning("pochette de l'album %s non récupérée : %s", album_id, exc)
+    if offline:  # importé sans Internet : l'album n'est pas marqué, la recherche sera refaite plus tard
+        log.info("pochette de l'album %s : réseau indisponible, nouvel essai plus tard", album_id)
+    else:
+        db.x("UPDATE albums SET cover_tried=1 WHERE id=?", album_id)
     if found:
         status["covers_found"] += 1
     return found

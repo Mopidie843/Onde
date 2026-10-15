@@ -51,14 +51,33 @@ class NetError(OSError):
     """Échec d'une requête, avec un message lisible. Hérite d'OSError comme les erreurs d'urllib :
     le code qui attrapait OSError continue de fonctionner tel quel."""
 
-    def __init__(self, message: str, status: int | None = None, retry_after: float | None = None):
+    def __init__(self, message: str, status: int | None = None, retry_after: float | None = None,
+                 offline: bool = False):
         super().__init__(message)
         self.status = status            # code HTTP (None : erreur réseau, délai dépassé…)
         self.retry_after = retry_after  # « Retry-After » envoyé par le serveur, en secondes
+        self.offline = offline          # le réseau lui-même a lâché (voir is_offline)
 
 
 class TooLarge(NetError):
     """Réponse plus grosse que la limite demandée."""
+
+
+# pas d'Internet, DNS en panne, délai dépassé, proxy injoignable : le réseau, pas le serveur
+_OFFLINE = (httpx.TimeoutException, httpx.NetworkError, httpx.ProxyError)
+
+
+def is_offline(exc: BaseException | None) -> bool:
+    """Vrai si l'échec vient du réseau (Pi démarré sans Internet, coupure, délai dépassé) et non d'une
+    réponse du serveur (404, JSON invalide, erreur Deezer…) : la même requête a toutes les chances
+    d'aboutir plus tard, il ne faut donc rien marquer comme « déjà essayé »."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:  # (on remonte les « raise … from exc »)
+        seen.add(id(exc))
+        if isinstance(exc, _OFFLINE) or (isinstance(exc, NetError) and exc.offline):
+            return True
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return False
 
 
 _client: httpx.Client | None = None
@@ -162,7 +181,7 @@ def _attempt(url: str, limit: int, deadline: float, headers: dict | None) -> tup
             if len(buf) > limit:
                 raise TooLarge(f"réponse trop volumineuse (maximum {_size(limit)})")
             if time.monotonic() - start > deadline:
-                raise NetError(f"délai dépassé (réponse incomplète au bout de {deadline:g} s)")
+                raise NetError(f"délai dépassé (réponse incomplète au bout de {deadline:g} s)", offline=True)
         return bytes(buf), resp.headers
 
 

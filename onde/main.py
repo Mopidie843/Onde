@@ -30,6 +30,7 @@ from starlette.staticfiles import StaticFiles
 from . import api_models as M
 from . import asks, autoupdate, dashboard, quota, share, terms
 from . import align, backup, clean, jam, updater, first_run, follow, users, config, covers, db, devlog, discover, library, lyrics, net, netinfo, notify, remote, restart, settings, stats, tls, transcode, tidy
+from . import gateway
 from .pi_player import player
 from .routes_import import router as import_router
 from .routes_maintenance import router as maintenance_router
@@ -37,7 +38,8 @@ from .routes_pi import router as pi_router
 from .routes_playlists import _add_to_playlist
 from .routes_playlists import router as playlists_router
 from .routes_sync import router as sync_router
-from .web import STREAMS_CLOSING, J, _404, _cover_from_request, _disposition, _flag, _playlist, _read_limited, _reindex, _stats, _track_row, shared
+from .web import (STREAMS_CLOSING, J, _404, _cover_from_request, _disposition, _flag, _int, _ints, _num, _playlist,
+                  _read_limited, _reindex, _stats, _text, _track_row, shared)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("onde")
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI):
     follow.start_background()  # nouveautés des artistes suivis
     backup.start_background()  # sauvegarde automatique de la base
     asks.start_background()  # demandes de titres : décision auto au bout de 5 min
+    users.start_background()  # ménage des sessions et liens expirés (au démarrage puis chaque jour)
     autoupdate.start_background()  # nouvelle version ? installée toute seule (si une source est choisie)
     lyrics.start_background()
     if align.on_lyrics not in lyrics.listeners:
@@ -68,6 +71,7 @@ async def lifespan(app: FastAPI):
     align.start_background()
     yield
     autoupdate.stop()
+    users.stop()
     asks.stop()
     backup.stop()
     follow.stop()
@@ -125,8 +129,10 @@ def _same(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
+# jamais compressés : flux audio, fichiers déjà compressés (zip, APK, images), flux en direct
 NO_GZIP = re.compile(r"^/api/(tracks/\d+/(stream|download)|albums/\d+/download|playlists/\d+/download"
-                     r"|cover/|pi/events|sync/events|notifications|upload)|^/static/icons/")
+                     r"|cover/|pi/events|sync/events|notifications|upload|share/[^/]+/stream/|library/export$"
+                     r"|app/apk)|^/static/icons/")
 PUBLIC = ("/login", "/logout", "/invite/", "/forgot", "/reset/", "/jam/", "/api/jam/", "/share/", "/api/share/", "/conditions", "/api/terms", "/api/app/", "/api/auth/", "/static/icons/", "/manifest.webmanifest", "/favicon",
           "/onde.crt", "/onde-cert.pem", "/sw.js")
 
@@ -175,9 +181,9 @@ class Guard:
                 else:
                     resp = RedirectResponse("/login", status_code=303)
                 return await resp(scope, receive, send)
+            user = user or users.GUEST  # page publique sans session : un visiteur, jamais l'administrateur
         else:
-            user = None  # accès libre : l'administrateur
-        user = user or users.admin_cached()
+            user = users.admin_cached()  # accès libre : l'administrateur
         if not public and not users.allowed(user["role"], scope.get("method", "GET"), path):
             resp = JSONResponse({"detail": "Ton profil n'a pas le droit de faire ça (demande à l'administrateur)."},
                                 status_code=403)
@@ -296,8 +302,20 @@ async def _form(request: Request) -> dict[str, str]:
     return {k: v[0] for k, v in urllib.parse.parse_qs(body.decode("utf-8", "replace")).items()}
 
 
+def _origin(request: Request) -> tuple[str, bool]:
+    """(adresse de la connexion, arrivée en HTTPS ?). Derrière la porte d'entrée HTTPS (gateway.py),
+    uvicorn ne voit que 127.0.0.1 : la porte a noté le vrai visiteur de chaque connexion relayée."""
+    peer = request.client.host if request.client else "?"
+    if gateway.is_loopback(peer):
+        relayed = gateway.origin(request.client.port)
+        if relayed:
+            return relayed
+    return peer, False
+
+
 def _secure(request: Request) -> bool:
-    return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    return (request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+            or _origin(request)[1])
 
 
 def _with_session(resp, request: Request, user: dict):
@@ -323,15 +341,16 @@ _login_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
-    """Adresse du visiteur. Derrière un relais local (Tailscale Serve/Funnel, Cloudflare Tunnel…) la
-    connexion arrive de 127.0.0.1 : on lit alors l'adresse transmise par le relais (la plus à droite,
-    celle qu'il a ajoutée lui-même)."""
-    peer = request.client.host if request.client else "?"
-    if peer in ("127.0.0.1", "::1", "localhost"):
+    """Adresse du visiteur. Derrière la porte d'entrée HTTPS : celle qu'elle a notée (voir _origin).
+    Derrière un relais local (Tailscale Serve/Funnel, Cloudflare Tunnel…) la connexion vient de la
+    machine elle-même : on lit alors l'adresse transmise par le relais (la plus à droite, celle qu'il
+    a ajoutée lui-même). Jamais pour un visiteur venu du réseau : il aurait inventé l'en-tête."""
+    origin, _tls = _origin(request)
+    if gateway.is_loopback(origin):
         fwd = request.headers.get("x-forwarded-for", "")
         if fwd:
-            return fwd.split(",")[-1].strip() or peer
-    return peer
+            return fwd.split(",")[-1].strip() or origin
+    return origin
 
 
 def login_blocked(ip: str) -> int:
@@ -466,6 +485,35 @@ async def auth_signup(request: Request):
     return _with_session(JSONResponse({"ok": True, "user": user}), request, user)
 
 
+def _base_url(request: Request) -> str | None:
+    """Adresse d'Onde pour un lien envoyé par mail (mot de passe oublié). Jamais l'en-tête Host tel
+    quel : n'importe qui peut l'inventer, et le lien (avec son jeton) partirait chez lui. L'adresse
+    publique des Réglages d'abord ; sinon l'en-tête Host seulement s'il désigne une adresse connue
+    d'Onde (réseau local, accès à distance Tailscale, la machine elle-même). None : pas de mail.
+    Bloquant (état de Tailscale) : hors de la boucle asyncio."""
+    public = settings.public_url()
+    if public:
+        return public
+    host = (request.headers.get("host") or "").strip().lower()
+    if not host or any(c in host for c in "/\\@ "):
+        return None
+    known = list(lan_urls())
+    try:
+        known.append(remote.status().get("url") or "")
+    except Exception as exc:
+        log.info("accès à distance inconnu : %s", exc)
+    for url in known:
+        if url and urllib.parse.urlsplit(url).netloc.lower() == host:
+            return url
+    try:
+        name = urllib.parse.urlsplit(f"//{host}").hostname
+    except ValueError:
+        return None
+    if name and gateway.is_loopback(name):
+        return f"{'https' if _secure(request) else 'http'}://{host}"
+    return None
+
+
 @app.post("/api/auth/forgot")
 async def auth_forgot(request: Request):
     ip = client_ip(request)
@@ -474,13 +522,13 @@ async def auth_forgot(request: Request):
     login_failed(ip)
     body = await _json(request)
     who = str(body.get("name") or body.get("email") or "")
-    if not users.mail_available():  # pas de mail : l'admin est prévenu (notification), on ne révèle rien sur le pseudo
+    base = await run_in_threadpool(_base_url, request) if users.mail_available() else None
+    if not base:  # pas de mail (ou adresse d'Onde inconnue) : l'admin est prévenu, on ne révèle rien sur le pseudo
         try:
             await run_in_threadpool(users.request_reset, who)
         except Exception as exc:
             log.warning("demande de mot de passe : %s", exc)
         return {"ok": True, "admin": True}
-    base = f"{request.url.scheme}://{request.headers.get('host', '')}"
     try:
         await run_in_threadpool(users.start_reset, who, base)
     except Exception as exc:
@@ -557,14 +605,14 @@ async def forgot(request: Request):
         return _auth_page("Mot de passe oublié", "Trop d'essais, réessaie plus tard.", "", "Retour", "/login", status=429)
     login_failed(ip)  # (compte comme un essai : pas d'envoi de mails en rafale)
     form = await _form(request)
-    if not users.mail_available():  # pas de mail : on prévient l'admin (jamais d'info sur l'existence du pseudo)
+    base = await run_in_threadpool(_base_url, request) if users.mail_available() else None
+    if not base:  # pas de mail (ou adresse d'Onde inconnue) : on prévient l'admin (jamais d'info sur le pseudo)
         try:
-            await run_in_threadpool(users.request_reset, form.get("name", ""))
+            await run_in_threadpool(users.request_reset, form.get("name") or form.get("email", ""))
         except Exception as exc:
             log.warning("demande de mot de passe : %s", exc)
-        return _auth_page("Mot de passe oublié", "C'est noté : si ce pseudo existe, l'administrateur vient d'être prévenu. "
+        return _auth_page("Mot de passe oublié", "C'est noté : si ce profil existe, l'administrateur vient d'être prévenu. "
                           "Il t'enverra un lien pour choisir un nouveau mot de passe.", "", "Retour à la connexion", "/login")
-    base = f"{request.url.scheme}://{request.headers.get('host', '')}"
     try:
         await run_in_threadpool(users.start_reset, form.get("email", ""), base)
     except Exception as exc:
@@ -631,6 +679,26 @@ def info():
     }
 
 
+# Attentes longues de /api/notifications : (boucle, évènement) réveillés à chaque nouvelle notification
+# (notify.add, appelé depuis n'importe quel thread) au lieu d'interroger la base en boucle.
+_notif_waiters: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
+_notif_lock = threading.Lock()
+
+
+def _wake_notification_waiters() -> None:
+    with _notif_lock:
+        waiters = list(_notif_waiters)
+    for loop, event in waiters:
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:  # boucle déjà fermée (arrêt d'Onde)
+            pass
+
+
+if _wake_notification_waiters not in notify.listeners:
+    notify.listeners.append(_wake_notification_waiters)
+
+
 @app.get("/api/notifications")
 async def notifications(after: str = "", wait: float = 0):
     """Événements d'Onde depuis le numéro `after` (`latest` ou vide : juste le dernier numéro).
@@ -640,12 +708,25 @@ async def notifications(after: str = "", wait: float = 0):
     except ValueError:
         start = None
     deadline = time.monotonic() + max(0.0, min(notify.MAX_WAIT, wait))
-    admin = users.is_admin()
-    while True:
-        res = notify.feed(start, admin)
-        if res["events"] or res["reset"] or time.monotonic() >= deadline or STREAMS_CLOSING.is_set():
-            return J(res)
-        await asyncio.sleep(0.7)
+    admin, uid = users.is_admin(), users.uid()
+    waiter = (asyncio.get_running_loop(), asyncio.Event())
+    with _notif_lock:
+        _notif_waiters.add(waiter)
+    try:
+        while True:
+            waiter[1].clear()  # (avant de lire : une notification arrivée pendant la lecture réveille)
+            res = await run_in_threadpool(notify.feed, start, admin, uid)
+            left = deadline - time.monotonic()
+            if res["events"] or res["reset"] or left <= 0 or STREAMS_CLOSING.is_set():
+                return J(res)
+            start = res["last"]  # rien pour ce profil jusque-là (notifications d'un autre) : on attend la suite
+            try:  # réveil à la prochaine notification ; au plus 1 s (arrêt d'Onde, fin de l'attente)
+                await asyncio.wait_for(waiter[1].wait(), min(left, 1.0))
+            except asyncio.TimeoutError:
+                pass
+    finally:
+        with _notif_lock:
+            _notif_waiters.discard(waiter)
 
 
 # ----------------------------------------------------------- console développeur (F7)
@@ -721,6 +802,14 @@ def remote_status(force: int = 0):
     return J(remote.status(bool(force)))
 
 
+@app.get("/api/remote/url")
+def remote_url():
+    """Adresse d'Onde hors de la maison, pour tous les profils connectés (appli Android, liens de
+    soirée et de partage) : seulement le mode et l'adresse, sans l'état détaillé de Tailscale."""
+    st = remote.status()
+    return {"mode": st.get("mode") or "off", "url": st.get("url")}
+
+
 @app.get("/api/settings")
 def get_settings():
     return settings.all_settings()
@@ -728,7 +817,10 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: dict = Body(...)):
-    changed = settings.update(body)
+    try:
+        changed = settings.update(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     if changed:
         users.log_activity("settings", ", ".join(f"{k}={v}" for k, v in changed.items())[:300])
     if "pi_audio_device" in changed and player.available:
@@ -996,14 +1088,22 @@ def list_artists(sort: str = "name"):
 
 @app.get("/api/artists/{name:path}")
 def get_artist(name: str):
-    tracks = M.tracks("(t.artist = ? COLLATE NOCASE OR a.artist = ? COLLATE NOCASE)", name, name,
+    # Même regroupement que la liste des artistes (sans accents ni majuscules : « Beyoncé » = « beyonce »).
+    # Le filtre sur `search` (texte déjà normalisé, indexable) écarte d'abord presque tous les titres :
+    # onde_norm() n'est calculé que sur les candidats.
+    key, terms = db.norm(name), db.like_terms(name)
+    if not key or not terms:
+        _404("Artiste introuvable")
+    pre_t = " AND ".join("t.search LIKE ? ESCAPE '\\'" for _ in terms)
+    tracks = M.tracks(f"{pre_t} AND (onde_norm(t.artist) = ? OR onde_norm(a.artist) = ?)", *terms, key, key,
                       order="t.plays DESC, a.year DESC, t.disc_no, t.track_no")
     if not tracks:
         _404("Artiste introuvable")
-    albums = M.albums("a.artist = ? COLLATE NOCASE", name, order="a.year DESC, added DESC")
+    albums = M.albums("onde_norm(a.artist) = ?", key, order="a.year DESC, added DESC")  # (peu d'albums)
     own = {a["id"] for a in albums}
-    appears = M.albums(f"a.id IN (SELECT album_id FROM tracks WHERE artist = ? COLLATE NOCASE)", name,
-                       order="a.year DESC")
+    pre_t2 = " AND ".join("t2.search LIKE ? ESCAPE '\\'" for _ in terms)
+    appears = M.albums(f"a.id IN (SELECT t2.album_id FROM tracks t2 WHERE {pre_t2} AND onde_norm(t2.artist) = ?)",
+                       *terms, key, order="a.year DESC")
     appears = [a for a in appears if a["id"] not in own]
     covers_count: dict[str, int] = {}
     for t in tracks:
@@ -1158,11 +1258,12 @@ def _suggest(q: str) -> str | None:
 def search(q: str = ""):
     short = clean.query(q) if q.strip() else ""
     shortened = bool(short) and short != " ".join(q.split())
-    res = _search(short) if shortened else _search(q)
-    if shortened and any(res.values()):
-        res["shortened"] = short  # le nom tapé était alourdi (émojis, « [AMV] », « 4K »…) : on a cherché l'essentiel
-    else:
-        res = _search(q)
+    res = _search(short if shortened else q)
+    if shortened:
+        if any(res.values()):
+            res["shortened"] = short  # le nom tapé était alourdi (émojis, « [AMV] », « 4K »…) : on a cherché l'essentiel
+        else:
+            res = _search(q)  # (rien avec l'essentiel : le texte complet, une seule fois de plus)
     if q.strip() and not any(res.values()):
         fix = _suggest(q)
         if fix:
@@ -1234,12 +1335,13 @@ def playlists():
 @app.post("/api/playlists")
 def create_playlist(body: dict = Body(default={})):
     now = time.time()
+    ids = _ints(body.get("trackIds"), 10_000)
+    description = _text(body.get("description"), 500)
     count = db.q1("SELECT COUNT(*) n FROM playlists WHERE owner_id=onde_uid()")["n"]
-    name = (body.get("name") or "").strip()[:120] or f"Ma playlist n° {count + 1}"
+    name = _text(body.get("name"), 120) or f"Ma playlist n° {count + 1}"
     cur = db.x("INSERT INTO playlists(name, description, created_at, updated_at, owner_id) VALUES(?,?,?,?,onde_uid())",
-               name, (body.get("description") or "").strip()[:500], now, now)
+               name, description, now, now)
     pid = cur.lastrowid
-    ids = [int(i) for i in body.get("trackIds") or []]
     if ids:
         _add_to_playlist(pid, ids)
     return _playlist(pid)
@@ -1255,10 +1357,12 @@ def get_playlist(pid: int):
 @app.patch("/api/playlists/{pid}")
 def edit_playlist(pid: int, body: dict = Body(...)):
     _playlist(pid)
-    if "name" in body:
-        db.x("UPDATE playlists SET name=? WHERE id=?", (body["name"] or "").strip()[:120] or "Sans titre", pid)
-    if "description" in body:
-        db.x("UPDATE playlists SET description=? WHERE id=?", (body["description"] or "").strip()[:500], pid)
+    name = (_text(body["name"], 120) or "Sans titre") if "name" in body else None
+    description = _text(body["description"], 500) if "description" in body else None
+    if name is not None:
+        db.x("UPDATE playlists SET name=? WHERE id=?", name, pid)
+    if description is not None:
+        db.x("UPDATE playlists SET description=? WHERE id=?", description, pid)
     db.x("UPDATE playlists SET updated_at=? WHERE id=?", time.time(), pid)
     return _playlist(pid)
 
@@ -1435,9 +1539,12 @@ def backup_info():
 
 @app.put("/api/backup")
 def backup_settings(body: dict = Body(...)):
+    directory, passphrase = body.get("dir"), body.get("passphrase")
+    if not all(v is None or isinstance(v, str) for v in (directory, passphrase)):
+        raise HTTPException(400, "Requête invalide : dossier et phrase secrète sont du texte.")
     try:
-        out = backup.configure(directory=body.get("dir"), passphrase=body.get("passphrase"),
-                               auto=body.get("auto") if "auto" in body else None)
+        out = backup.configure(directory=directory, passphrase=passphrase,
+                               auto=bool(body.get("auto")) if "auto" in body else None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     users.log_activity("backup", "réglages de sauvegarde")
@@ -1517,8 +1624,9 @@ def jam_search(token: str, q: str = ""):
 @app.post("/api/jam/{token}/add")
 def jam_add(token: str, request: Request, body: dict = Body(...)):
     _jam_or_404(token)
+    tid = _int(body.get("trackId"), 0, 2 ** 62, "titre attendu")
     try:
-        item = jam.add(token, int(body.get("trackId")), str(body.get("by") or ""), client_ip(request) + "|" + str(body.get("guest") or "")[:20])
+        item = jam.add(token, tid, str(body.get("by") or ""), client_ip(request) + "|" + str(body.get("guest") or "")[:20])
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc) if isinstance(exc, ValueError) and str(exc) else "Requête invalide")
     except KeyError:
@@ -1620,15 +1728,12 @@ def follows_check():
 @app.post("/api/resume")
 def resume_save(body: dict = Body(...)):
     """Où en est la lecture sur cet appareil (envoyé régulièrement) : un autre appareil peut reprendre là."""
-    try:
-        queue = [int(i) for i in (body.get("queue") or [])][:300]
-        tid = int(body.get("trackId"))
-    except (TypeError, ValueError):
-        raise HTTPException(400, "Requête invalide")
+    queue = _ints(body.get("queue"), 300)
+    tid = _int(body.get("trackId"), 0, 2 ** 62)
     src = body.get("source") if isinstance(body.get("source"), dict) else None
     state = {
-        "trackId": tid, "position": max(0.0, float(body.get("position") or 0)), "queue": queue,
-        "index": max(0, min(int(body.get("index") or 0), max(0, len(queue) - 1))),
+        "trackId": tid, "position": _num(body.get("position") or 0, 0, 7 * 86400), "queue": queue,
+        "index": _int(body.get("index") or 0, 0, max(0, len(queue) - 1)),
         "device": str(body.get("device") or "")[:60], "deviceId": str(body.get("deviceId") or "")[:40],
         "source": {k: str(v)[:200] for k, v in (src or {}).items() if k in ("key", "label", "href", "kind")} or None,
         "playing": bool(body.get("playing")), "at": time.time(),
@@ -1655,8 +1760,9 @@ def me_quota():
 
 @app.post("/api/me/quota-request")
 def me_quota_request(body: dict = Body(default={})):
+    amount = _int(body.get("amountMb") or 2000, 0, 1_000_000, "nombre de Mo attendu")
     try:
-        return J(asks.ask_quota(int(body.get("amountMb") or 2000), str(body.get("note") or "")))
+        return J(asks.ask_quota(amount, str(body.get("note") or "")))
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc))
 
@@ -1816,7 +1922,7 @@ h3{{margin:22px 0 6px;font-size:16px}}li{{color:#c9c9d1;font-size:14px;margin:4p
 @app.get("/api/terms")
 def terms_get():
     return {"version": terms.VERSION, "title": terms.TITLE, "html": terms.html_body(),
-            "accepted": terms.accepted(users.uid()) if users.current_user.get() else None}
+            "accepted": None if users.is_guest() else terms.accepted(users.uid())}  # (visiteur : rien à dire)
 
 
 @app.post("/api/me/terms")
@@ -1863,12 +1969,13 @@ def users_create(body: dict = Body(...)):
 @app.patch("/api/users/{user_id}")
 def users_edit(user_id: int, body: dict = Body(...)):
     _user_or_404(user_id)
+    q = body.get("quotaMb")
+    q = None if q is None or q == "" else _int(q, 0, 10_000_000, "espace en Mo attendu")  # (vide : sans limite)
     try:
         u = users.update(user_id, name=body.get("name"), email=body.get("email"), role=body.get("role"),
                          password=body.get("password") or None)
         if "quotaMb" in body:
-            q = body.get("quotaMb")
-            quota.set_limit(user_id, None if q in (None, "") else int(q))
+            quota.set_limit(user_id, q)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     if body.get("password"):
@@ -1920,12 +2027,14 @@ def users_logout(user_id: int):
 def invite_create(request: Request, body: dict = Body(...)):
     if not users.accounts_enabled():
         raise HTTPException(400, "Donne-toi d'abord un mot de passe (Mon profil) : sans lui, tout le monde a accès à tout.")
+    role = body.get("role", "member")
+    days = _num(body.get("days") or 7, 0.04, 365, "nombre de jours attendu")
+    uses = _int(body.get("uses") or 1, 1, 50, "nombre d'utilisations attendu")
     try:
-        token = users.create_invite(body.get("role", "member"), float(body.get("days") or 7),
-                                    int(body.get("uses") or 1), str(body.get("note") or ""))
-    except (ValueError, TypeError) as exc:
+        token = users.create_invite(role if isinstance(role, str) else "", days, uses, _text(body.get("note"), 80))
+    except ValueError as exc:
         raise HTTPException(400, str(exc))
-    users.log_activity("invite", f"{users.ROLES[body.get('role', 'member')]} · {body.get('days') or 7} j")
+    users.log_activity("invite", f"{users.ROLES[role]} · {days:g} j")
     return {"token": token, "path": f"/invite/{token}"}
 
 

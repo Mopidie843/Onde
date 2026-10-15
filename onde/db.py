@@ -215,6 +215,7 @@ MIGRATIONS = [
     ("users", "quota_mb", "INT"),
     ("users", "terms_version", "TEXT"),                        # conditions d'utilisation acceptées
     ("users", "terms_at", "REAL"),                              # espace d'import (Mo) ; vide = valeur par défaut
+    ("notifications", "user_id", "INT"),                       # profil visé (vide : tout le monde)
 ]
 
 
@@ -276,6 +277,7 @@ def init() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS ix_likes_track ON likes(track_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_plays_user ON plays(user_id, played_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_tracks_added_by ON tracks(added_by)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_user ON notifications(user_id, id)")
     from . import users  # (import ici : users utilise db)
     users.ensure_admin()
 

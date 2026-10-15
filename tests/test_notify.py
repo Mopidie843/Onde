@@ -107,6 +107,78 @@ def test_api_requires_password(n, monkeypatch):
     assert r.status_code == 401 and "Connexion requise" in r.text
 
 
+# ------------------------------------------------------------------ notifications propres à un profil
+def test_notification_for_one_profile(n):
+    n.add("download", "Pour Pote", "a", user_id=2)
+    n.add("import", "Pour tous", "b")
+    n.add("download", "Pour Léa", "c", user_id=3)
+    assert [e["title"] for e in n.feed(0, admin=False, user_id=2)["events"]] == ["Pour Pote", "Pour tous"]
+    assert [e["title"] for e in n.feed(0, admin=True, user_id=1)["events"]] == ["Pour tous"]
+    assert len(n.since(0)) == 3  # (sans profil : tout, pour les outils)
+    # le regroupement ne mélange pas deux profils
+    n.downloaded({"title": "T1"}, user_id=2)
+    n.downloaded({"title": "T2"}, user_id=3)
+    n.downloaded({"title": "T3"}, user_id=2)
+    mine = n.feed(0, admin=False, user_id=2)["events"]
+    assert [(e["title"], e["n"]) for e in mine] == [("Pour tous", 1), ("Musique téléchargée", 3)]
+    assert [e["n"] for e in n.feed(0, admin=False, user_id=3)["events"]] == [1, 2]
+
+
+def test_download_notifies_only_who_asked(n):
+    from onde import routes_import
+    users.update(1, password="secret123")
+    pote = users.create("Pote", "pote-pass", "member")
+    with users.use(pote):
+        routes_import._notify_download({"status": "added", "track": {"title": "Titre", "artist": "Artiste"}})
+    assert [e["title"] for e in n.feed(0, admin=False, user_id=pote["id"])["events"]] == ["Musique téléchargée"]
+    assert n.feed(0, admin=True, user_id=1)["events"] == []
+
+
+def _login(name, pwd):
+    c = TestClient(main.app)
+    assert c.post("/login", data={"name": name, "password": pwd}, follow_redirects=False).status_code == 303
+    return c
+
+
+def test_long_poll_ignores_events_of_others(n, monkeypatch):
+    """Un ami en attente n'est pas réveillé pour rien par les notifications des autres (ni celles de l'admin),
+    et l'attente se termine dès qu'une notification arrive pour lui."""
+    monkeypatch.setattr(main, "_login_fails", {})
+    users.update(1, password="secret123")
+    pote = users.create("Pote", "pote-pass", "member")
+    c = _login("Pote", "pote-pass")
+    last = c.get("/api/notifications?after=latest").json()["last"]
+    threading.Timer(0.3, lambda: n.add("password", "Pour l'admin")).start()
+    threading.Timer(0.5, lambda: n.add("download", "Pour un autre", user_id=pote["id"] + 1)).start()
+    threading.Timer(1.0, lambda: n.add("download", "Pour Pote", user_id=pote["id"])).start()
+    t = time.monotonic()
+    r = c.get(f"/api/notifications?after={last}&wait=10").json()
+    assert 0.8 < time.monotonic() - t < 2.5
+    assert [e["title"] for e in r["events"]] == ["Pour Pote"] and r["last"] == last + 3
+    assert main._notif_waiters == set()  # (plus personne n'attend)
+
+
+def test_long_poll_is_woken_up_not_polling(n):
+    """La réponse part dès la notification (réveil), pas au prochain tour d'une boucle d'attente."""
+    c = TestClient(main.app)
+    last = c.get("/api/notifications?after=latest").json()["last"]
+    threading.Timer(0.2, lambda: n.add("import", "Musique ajoutée", "1 titre")).start()
+    t = time.monotonic()
+    r = c.get(f"/api/notifications?after={last}&wait=10").json()
+    assert time.monotonic() - t < 0.8 and len(r["events"]) == 1
+
+
+def test_long_poll_reports_last_number_when_nothing_for_me(n, monkeypatch):
+    monkeypatch.setattr(main, "_login_fails", {})
+    monkeypatch.setattr(notify, "MAX_WAIT", 1.0)
+    users.update(1, password="secret123")
+    users.create("Pote", "pote-pass", "member")
+    c = _login("Pote", "pote-pass")
+    n.add("ask", "Demande", "réservée à l'admin")
+    r = c.get("/api/notifications?after=0&wait=5").json()
+    assert r == {"last": 1, "events": [], "reset": False}  # (rien pour lui : il repart du dernier numéro)
+
+
 # ------------------------------------------------------------------ mot de passe
 @pytest.fixture
 def pw(fresh_db, monkeypatch):

@@ -41,6 +41,17 @@ PEEK_TIMEOUT = 30.0   # une connexion ouverte qui n'envoie rien (pré-connexion 
 HEAD_TIMEOUT = 15.0
 CHUNK = 64 * 1024
 
+# Connexions relayées en cours : port local (côté porte) de la connexion vers Onde -> (adresse
+# d'origine du visiteur, True s'il est arrivé en HTTPS). Onde ne voit que 127.0.0.1 derrière la
+# porte : il retrouve ainsi le vrai visiteur (blocage après 8 essais ratés, cookie « Secure »)
+# sans croire un en-tête que n'importe qui peut inventer.
+PEERS: dict[int, tuple[str, bool]] = {}
+
+
+def origin(port: int | None) -> tuple[str, bool] | None:
+    """(adresse d'origine, HTTPS ?) de la connexion relayée qui arrive à Onde depuis ce port local."""
+    return PEERS.get(port) if port else None
+
 
 def _is_loopback(addr: str) -> bool:
     try:
@@ -49,6 +60,11 @@ def _is_loopback(addr: str) -> bool:
         return False
     mapped = getattr(ip, "ipv4_mapped", None)
     return (mapped or ip).is_loopback
+
+
+def is_loopback(addr: str) -> bool:
+    """La machine elle-même (127.0.0.1, ::1, « localhost ») ?"""
+    return addr == "localhost" or _is_loopback(addr)
 
 
 class Gateway:
@@ -188,14 +204,14 @@ class Gateway:
                 raise
             if self.mode == "https":
                 if tls or _is_loopback(addr[0]):
-                    await self._relay(reader, writer)
+                    await self._relay(reader, writer, addr[0], tls)
                 else:
                     await self._plain_from_lan(reader, writer)
             else:
                 if tls:
                     await self._redirect(reader, writer, "http")
                 else:
-                    await self._relay(reader, writer)
+                    await self._relay(reader, writer, addr[0], tls)
         except (OSError, ssl.SSLError, EOFError, asyncio.TimeoutError, asyncio.IncompleteReadError,
                 asyncio.LimitOverrunError, ValueError, asyncio.CancelledError):
             pass
@@ -203,8 +219,9 @@ class Gateway:
             if writer is not None:
                 writer.close()
 
-    async def _relay(self, reader, writer) -> None:
-        """Relaie les octets dans les deux sens entre le navigateur et Onde (flux, SSE, Range…)."""
+    async def _relay(self, reader, writer, peer: str = "", tls: bool = False) -> None:
+        """Relaie les octets dans les deux sens entre le navigateur et Onde (flux, SSE, Range…).
+        `peer`, `tls` : adresse d'origine du visiteur et HTTPS, notés dans PEERS pour Onde."""
         try:
             up_r, up_w = await asyncio.open_connection("127.0.0.1", self.upstream_port, limit=CHUNK)
         except OSError:
@@ -212,7 +229,21 @@ class Gateway:
             # était fermé. Surtout pas de « 503 » : un EventSource (mises à jour en direct) abandonne
             # définitivement sur un statut d'erreur, alors qu'il se reconnecte seul après une coupure.
             return
+        # noté avant de relayer le moindre octet : Onde ne peut pas lire la requête avant
+        sockname = up_w.get_extra_info("sockname")
+        port = sockname[1] if sockname else None
+        entry = (peer, tls)
+        if port:
+            PEERS[port] = entry
+        try:
+            await self._pipe(reader, writer, up_r, up_w)
+        finally:
+            if port and PEERS.get(port) is entry:
+                PEERS.pop(port, None)
 
+    @staticmethod
+    async def _pipe(reader, writer, up_r, up_w) -> None:
+        """Copie les octets dans les deux sens jusqu'à ce que l'un des côtés ferme."""
         async def to_upstream() -> None:
             try:
                 while data := await reader.read(CHUNK):

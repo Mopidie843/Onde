@@ -313,3 +313,80 @@ def test_app_forgot_without_mail(app, monkeypatch):
     assert anon.post("/api/auth/forgot", json={"email": "pote@exemple.fr"}).status_code == 200   # par le mail aussi
     assert [x["name"] for x in admin.get("/api/pwreqs").json()["requests"]] == ["Pote"]
     assert anon.post("/api/auth/forgot", json={"name": "Inconnu"}).json()["ok"]                  # même réponse
+
+
+# ------------------------------------------------------------------ suppression, invitations, ménage
+def test_deleted_profile_leaves_nothing_to_a_newcomer(app):
+    """Un profil supprimé emporte suivis, reprise, partages, notifications ; son numéro ne resservira pas."""
+    from onde import follow, notify, quota, share
+    pote_id = next(u["id"] for u in users.all_users() if u["name"] == "Pote")
+    with users.use(users.get(pote_id)):
+        follow.follow("Artiste")
+        db.x("INSERT INTO meta(k, v) VALUES(?, '{}')", f"resume:{pote_id}")
+        pid = db.x("INSERT INTO playlists(name, owner_id) VALUES('À moi', ?)", pote_id).lastrowid
+        share.create(pid)
+        notify.add("download", "Musique téléchargée", "x", user_id=pote_id)
+    db.x("INSERT INTO asks(user_id, kind, query, created) VALUES(?, 'track', 'un titre', 1)", pote_id)
+    quota.mark({"status": "added", "track": {"id": 2}}, user_id=pote_id)
+    top = max(u["id"] for u in users.all_users())
+    users.delete(top)  # (le plus grand numéro : SQLite le redonnerait au suivant)
+    users.delete(pote_id)
+    assert db.q1("SELECT COUNT(*) n FROM follows WHERE user_id=?", pote_id)["n"] == 0
+    assert db.q1("SELECT 1 FROM meta WHERE k=?", f"resume:{pote_id}") is None
+    assert db.q1("SELECT COUNT(*) n FROM shares")["n"] == 0
+    assert db.q1("SELECT COUNT(*) n FROM notifications WHERE user_id=?", pote_id)["n"] == 0
+    assert db.q1("SELECT added_by FROM tracks WHERE id=2")["added_by"] is None
+    ask = db.q1("SELECT status, reason FROM asks WHERE user_id=?", pote_id)
+    assert (ask["status"], ask["reason"]) == ("refused", "Profil supprimé")
+    new = users.create("Nouveau", "nouveau-pass", "member")
+    assert new["id"] > top
+    with users.use(new):
+        assert follow.following() == []
+
+
+def test_single_use_invite_cannot_be_used_twice_at_once(app):
+    import threading
+    with users.use(users.get(1)):
+        token = users.create_invite("member", 1, 1)
+    # un pseudo déjà pris ne consomme pas l'invitation
+    with pytest.raises(ValueError, match="déjà pris"):
+        users.use_invite(token, "Pote", "autre-pass")
+    assert users.invite_info(token)["left"] == 1
+    barrier, results = threading.Barrier(4), []
+
+    def signup(name):
+        barrier.wait()
+        try:
+            results.append(users.use_invite(token, name, "ami-pass-1")["name"])
+        except ValueError as exc:
+            results.append(str(exc))
+
+    threads = [threading.Thread(target=signup, args=(f"Ami{i}",)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    created = [r for r in results if r.startswith("Ami")]
+    assert len(results) == 4 and len(created) == 1
+    assert db.q1("SELECT uses FROM invites")["uses"] == 1
+    assert users.invite_info(token) is None
+
+
+def test_purge_and_single_reset_link(app):
+    import time
+    now = time.time()
+    pote_id = next(u["id"] for u in users.all_users() if u["name"] == "Pote")
+    users.new_session(pote_id)
+    old = users.new_session(pote_id)
+    db.x("UPDATE sessions SET created=? WHERE id=?", now - (users.SESSION_DAYS + 1) * 86400, users._digest(old))
+    users.admin_reset_link(pote_id)
+    db.x("UPDATE resets SET expires=?", now - 10)
+    with users.use(users.get(1)):
+        fresh = users.create_invite("member", 1)
+        stale = users.create_invite("listener", 1)
+    db.x("UPDATE invites SET expires=? WHERE id=?", now - 31 * 86400, users._digest(stale))
+    assert users.purge() == {"sessions": 1, "resets": 1, "invites": 1}
+    assert db.q1("SELECT COUNT(*) n FROM sessions WHERE user_id=?", pote_id)["n"] == 1
+    assert [i["token"] for i in users.invites()] == [fresh]
+    assert db.q1("SELECT 1 FROM meta WHERE k=?", "invite:" + users._digest(stale)[:16]) is None
+    assert users.purge() == {"sessions": 0, "resets": 0, "invites": 0}

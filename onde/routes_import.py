@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import config, downloader, library, net, notify, quota, users
-from .web import J
+from .web import J, LocalAddress, _check_public_url, _text
 
 router = APIRouter()
 
@@ -128,16 +128,17 @@ def _fetch_direct(url: str) -> dict:
 
 
 def _notify_download(res: dict) -> dict:
-    """Notification « musique téléchargée » (l'appli Android la montre si on a quitté l'écran)."""
+    """Notification « musique téléchargée » (l'appli Android la montre si on a quitté l'écran), pour
+    celui qui a lancé le téléchargement seulement."""
     try:
         if res.get("status") == "added":
             tracks = res.get("tracks") or ([res["track"]] if res.get("track") else [])
             users.log_activity("download", ", ".join(f"{t.get('title')} — {t.get('artist')}" for t in tracks[:3]))
             if len(tracks) == 1:
-                notify.downloaded(tracks[0])
+                notify.downloaded(tracks[0], user_id=users.uid())
             elif tracks:
                 notify.add("download", "Musique téléchargée", f"{len(tracks)} musiques téléchargées", "#/library",
-                           count_text="{n} musiques téléchargées", amount=len(tracks))
+                           count_text="{n} musiques téléchargées", amount=len(tracks), user_id=users.uid())
     except Exception:
         log.exception("notification de téléchargement")
     return res
@@ -145,7 +146,7 @@ def _notify_download(res: dict) -> dict:
 
 @router.post("/api/import-url")
 def import_url(body: dict = Body(...)):
-    url = (body.get("url") or "").strip()
+    url = _text(body.get("url"), 4000, "lien ou nom de musique attendu")
     try:
         quota.check()
     except quota.QuotaFull as exc:
@@ -168,6 +169,14 @@ def _import_url(url: str) -> dict:
             raise HTTPException(400, str(exc))
     if downloader.playlist_kind(url) and not re.search(r"[?&]v=", url):
         raise HTTPException(400, "C'est un lien de playlist : colle-le dans « Importer une playlist » (un peu plus bas).")
+    if not users.is_admin():  # un ami ne fait pas sonder le réseau de la maison par le serveur
+        try:
+            _check_public_url(url)
+        except LocalAddress as exc:
+            raise HTTPException(400, str(exc))
+        except ValueError as exc:
+            log.info("lien refusé (%s) : %s", url[:200], exc)
+            raise HTTPException(400, "Lien inaccessible depuis Onde : vérifie l'adresse.")
     # lien : d'abord comme fichier audio direct (MP3, M4A…) ; sinon comme page d'un site
     # (YouTube, SoundCloud, Bandcamp…) via le même moteur que la recherche par nom.
     try:
@@ -185,7 +194,7 @@ def import_playlist(body: dict = Body(...)):
     """Résout un lien de playlist (YouTube, SoundCloud, Deezer, Spotify) en liste de titres à télécharger
     (le téléchargement lui-même se fait ensuite titre par titre via /api/import-url, comme une
     liste collée à la main)."""
-    url = (body.get("url") or "").strip()
+    url = _text(body.get("url"), 4000, "lien de playlist attendu")
     if not url:
         raise HTTPException(400, "Colle un lien de playlist")
     try:

@@ -103,16 +103,18 @@ def library_export():
             seen[arc] = 0
         files.append((t["path"], arc))
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-    try:
-        tmp.write(_export_manifest())
-    finally:
-        tmp.close()
-    files.insert(0, (tmp.name, "onde-playlists-et-likes.json"))
+    manifest = _export_manifest()
 
     def gen():
+        # Fichier temporaire créé seulement quand la diffusion commence : si le client se déconnecte
+        # avant, le générateur ne démarre jamais (son finally non plus) et rien ne traîne sur le disque.
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
         try:
-            yield from library.zip_stream(files)
+            try:
+                tmp.write(manifest)
+            finally:
+                tmp.close()
+            yield from library.zip_stream([(tmp.name, "onde-playlists-et-likes.json"), *files])
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 

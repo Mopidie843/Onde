@@ -8,12 +8,16 @@ le journal reste simplement dans la base (200 événements au plus).
 
 Plusieurs événements du même genre rapprochés (40 titres calés d'affilée) forment UNE notification
 qui se met à jour (« 12 titres… »), au lieu d'inonder le téléphone.
+
+Une notification peut viser un seul profil (`user_id` : la musique qu'il a téléchargée, les
+nouveautés d'un artiste qu'il suit) ; sans `user_id`, elle est pour tout le monde.
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
+from collections.abc import Callable
 
 from . import db, settings
 
@@ -32,6 +36,8 @@ MAX_WAIT = 30.0
 _lock = threading.Lock()
 _last = 0          # dernier numéro connu (évite d'interroger la base à chaque attente)
 _loaded = False
+# appelées (sans argument) après chaque nouvel événement : réveillent les attentes longues de l'API
+listeners: list[Callable[[], None]] = []
 
 
 def _load() -> int:
@@ -53,11 +59,11 @@ def _plural(n: int, one: str, many: str) -> str:
 
 
 def add(kind: str, title: str, text: str = "", link: str = "", count_text: str | None = None,
-        amount: int = 1) -> int | None:
+        amount: int = 1, user_id: int | None = None) -> int | None:
     """Ajoute un événement. `count_text` : texte à afficher quand plusieurs événements sont regroupés,
     avec « {n} » pour leur nombre (ex. « {n} titres synchronisés »). Renvoie le numéro, ou None si ce
     genre de notification est désactivé dans les Réglages. `amount` : combien d'éléments cet événement
-    représente (12 titres ajoutés d'un coup)."""
+    représente (12 titres ajoutés d'un coup). `user_id` : seul ce profil la verra (None : tout le monde)."""
     key = KINDS.get(kind)
     if key and not settings.get(key):
         return None
@@ -66,31 +72,41 @@ def add(kind: str, title: str, text: str = "", link: str = "", count_text: str |
         global _last
         _load()
         n = amount
-        prev = db.q1("SELECT id, n FROM notifications WHERE kind=? AND ts > ? ORDER BY id DESC LIMIT 1",
-                     kind, now - GROUP_WINDOW)
+        prev = db.q1("SELECT id, n FROM notifications WHERE kind=? AND user_id IS ? AND ts > ? ORDER BY id DESC LIMIT 1",
+                     kind, user_id, now - GROUP_WINDOW)
         if prev and count_text:
             n = prev["n"] + amount
             db.x("DELETE FROM notifications WHERE id=?", prev["id"])
             text = count_text.format(n=n)
-        cur = db.x("INSERT INTO notifications(ts, kind, title, text, link, n) VALUES(?,?,?,?,?,?)",
-                   now, kind, title[:120], text[:300], link[:200], n)
+        cur = db.x("INSERT INTO notifications(ts, kind, title, text, link, n, user_id) VALUES(?,?,?,?,?,?,?)",
+                   now, kind, title[:120], text[:300], link[:200], n, user_id)
         _last = cur.lastrowid
         db.x("DELETE FROM notifications WHERE id <= ?", _last - KEEP)
-        return _last
+        new_id = _last
+    for fn in list(listeners):
+        try:
+            fn()
+        except Exception:
+            log.exception("réveil des notifications")
+    return new_id
 
 
-def since(after: int, limit: int = 20, admin: bool = True) -> list[dict]:
-    if admin:
-        rows = db.q("SELECT * FROM notifications WHERE id > ? ORDER BY id LIMIT ?", max(0, after), limit)
-    else:
-        marks = ",".join("?" * len(ADMIN_KINDS))
-        rows = db.q(f"SELECT * FROM notifications WHERE id > ? AND kind NOT IN ({marks}) ORDER BY id LIMIT ?",
-                    max(0, after), *ADMIN_KINDS, limit)
+def since(after: int, limit: int = 20, admin: bool = True, user_id: int | None = None) -> list[dict]:
+    """Événements après `after`. Pas admin : sans les genres réservés à l'admin. `user_id` : seulement
+    ceux pour tout le monde et ceux de ce profil (None : tous, pour les outils)."""
+    where, args = ["id > ?"], [max(0, after)]
+    if not admin:
+        where.append(f"kind NOT IN ({','.join('?' * len(ADMIN_KINDS))})")
+        args += ADMIN_KINDS
+    if user_id is not None:
+        where.append("(user_id IS NULL OR user_id = ?)")
+        args.append(user_id)
+    rows = db.q(f"SELECT * FROM notifications WHERE {' AND '.join(where)} ORDER BY id LIMIT ?", *args, limit)
     return [{"id": r["id"], "ts": r["ts"], "kind": r["kind"], "title": r["title"], "text": r["text"],
              "link": r["link"], "n": r["n"]} for r in rows]
 
 
-def feed(after: int | None, admin: bool = True) -> dict:
+def feed(after: int | None, admin: bool = True, user_id: int | None = None) -> dict:
     """Réponse de l'API. `after` None : première connexion → pas d'historique, juste le dernier numéro
     (l'appli ne rejoue jamais d'anciens événements)."""
     last = last_id()
@@ -98,7 +114,7 @@ def feed(after: int | None, admin: bool = True) -> dict:
         return {"last": last, "events": [], "reset": True}
     if after == last:  # rien de neuf : pas de requête sur la base
         return {"last": last, "events": [], "reset": False}
-    return {"last": last, "events": since(after, admin=admin), "reset": False}
+    return {"last": last, "events": since(after, admin=admin, user_id=user_id), "reset": False}
 
 
 # --------------------------------------------------------------- raccourcis pour le reste d'Onde
@@ -108,17 +124,17 @@ def lyrics_synced(title: str, artist: str, album_id: int | None) -> None:
         count_text="{n} titres ont maintenant leurs paroles synchronisées sur la voix")
 
 
-def music_added(count: int) -> None:
+def music_added(count: int, user_id: int | None = None) -> None:
     if count <= 0:
         return
     add("import", "Musique ajoutée", f"{_plural(count, 'titre ajouté', 'titres ajoutés')} à ta bibliothèque",
-        "#/library", count_text="{n} titres ajoutés à ta bibliothèque", amount=count)
+        "#/library", count_text="{n} titres ajoutés à ta bibliothèque", amount=count, user_id=user_id)
 
 
-def downloaded(track: dict | None) -> None:
+def downloaded(track: dict | None, user_id: int | None = None) -> None:
     if not track:
         return
     title, artist = track.get("title") or "", track.get("artist") or ""
     album_id = track.get("albumId")
     add("download", "Musique téléchargée", f"{artist} — {title}" if artist else title,
-        f"#/album/{album_id}" if album_id else "", count_text="{n} musiques téléchargées")
+        f"#/album/{album_id}" if album_id else "", count_text="{n} musiques téléchargées", user_id=user_id)

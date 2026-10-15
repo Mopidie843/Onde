@@ -6,8 +6,12 @@ Ces fonctions étaient dans main.py ; elles sont ici pour que chaque famille de 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import logging
+import math
 import os
+import socket
 import threading
 import urllib.parse
 
@@ -16,7 +20,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from . import api_models as M
-from . import config, covers, db, library
+from . import config, covers, db, library, users
+
+log = logging.getLogger("onde.web")
 
 
 class Shared:
@@ -29,15 +35,111 @@ STREAMS_CLOSING = threading.Event()  # arrêt en cours : les flux en direct (SSE
 
 
 class J(Response):
-    """JSON rapide : évite jsonable_encoder de FastAPI (beaucoup plus lent sur les grosses listes)."""
+    """JSON rapide : évite jsonable_encoder de FastAPI (beaucoup plus lent sur les grosses listes).
+    Jamais de NaN ni d'Infinity (JSON invalide, refusé par les navigateurs) : une vieille valeur
+    infinie gardée en base devient null au lieu de casser la page."""
     media_type = "application/json"
 
     def render(self, content) -> bytes:
-        return json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        try:
+            text = json.dumps(content, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        except ValueError:
+            text = json.dumps(_finite(content), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        return text.encode("utf-8")
+
+
+def _finite(v):
+    """Copie de `v` où les nombres non finis (nan, inf) deviennent None."""
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: _finite(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_finite(x) for x in v]
+    return v
 
 
 def _404(what: str = "Introuvable"):
     raise HTTPException(status_code=404, detail=what)
+
+
+# ------------------------------------------------------------------ entrées des requêtes
+# Une entrée invalide (texte à la place d'un nombre, tableau à la place d'un objet, « Infinity »…)
+# donne une erreur 400 lisible, jamais une erreur 500.
+def _bad(what: str) -> HTTPException:
+    return HTTPException(400, f"Requête invalide : {what}.")
+
+
+def _num(v, lo: float, hi: float, what: str = "nombre attendu") -> float:
+    """Nombre fini (texte numérique accepté), ramené entre `lo` et `hi`. nan et inf refusés."""
+    if v is None or isinstance(v, (list, dict)):
+        raise _bad(what)
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise _bad(what) from None
+    if not math.isfinite(f):
+        raise _bad(what)
+    return min(hi, max(lo, f))
+
+
+def _int(v, lo: int, hi: int, what: str = "nombre entier attendu") -> int:
+    """Entier (« 12 » et 12.0 acceptés), ramené entre `lo` et `hi`."""
+    return int(_num(v, lo, hi, what))
+
+
+def _ints(v, max_n: int, what: str = "liste de numéros attendue") -> list[int]:
+    """Liste de numéros (ex. trackIds) : au plus `max_n`, chacun entier et positif."""
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise _bad(what)
+    return [_int(x, 0, 2 ** 62, what) for x in v[:max_n]]
+
+
+def _text(v, max_len: int, what: str = "texte attendu") -> str:
+    """Texte sans espaces au bord, tronqué à `max_len`. Nombres acceptés ; objets et listes refusés."""
+    if v is None:
+        return ""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        raise _bad(what)
+    return str(v).strip()[:max_len]
+
+
+def _obj(body: bytes | None) -> dict:
+    """Corps JSON qui doit être un objet {…}."""
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError:
+        raise _bad("JSON illisible") from None
+    if not isinstance(data, dict):
+        raise _bad("objet JSON attendu")
+    return data
+
+
+# ------------------------------------------------------------------ liens donnés par un profil (SSRF)
+class LocalAddress(ValueError):
+    """Lien qui mène au réseau local (box, NAS, autre service de la maison) : refusé."""
+
+
+def _check_public_url(url: str) -> None:
+    """Refuse un lien vers le réseau local ou la machine elle-même : sinon un ami pourrait faire sonder
+    la maison par le serveur (« ce port répond-il ? »). L'administrateur garde l'accès au réseau
+    local (NAS…) : il a déjà tous les droits. Bloquant (résolution DNS) : hors de la boucle asyncio.
+    Les redirections ne sont pas revérifiées ici (il faudrait un contrôle dans net.py, à chaque requête)."""
+    host = urllib.parse.urlsplit(url).hostname
+    if not host:
+        raise ValueError("URL invalide")
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"adresse introuvable ({exc})") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        # (non « global » : réseau privé, la machine elle-même, lien local, 100.64/10 de Tailscale, réservé…)
+        if not ip.is_global or ip.is_multicast:
+            raise LocalAddress("Adresse locale refusée : colle un lien vers Internet.")
 
 
 def _disposition(filename: str) -> str:
@@ -69,13 +171,20 @@ async def _cover_from_request(request: Request) -> str:
     ctype = request.headers.get("content-type", "")
     body = await _read_limited(request, 25_000_000)
     if ctype.startswith("application/json"):
-        url = (json.loads(body or b"{}").get("url") or "").strip()
+        url = _text(_obj(body).get("url"), 2000, "lien de l'image attendu")
         if not url:
             raise HTTPException(400, "URL manquante")
         try:
+            if not users.is_admin():
+                await run_in_threadpool(_check_public_url, url)
             raw = await run_in_threadpool(covers.fetch_image, url)
+        except LocalAddress as exc:
+            raise HTTPException(400, str(exc))
         except Exception as exc:
-            raise HTTPException(400, f"Image inaccessible : {exc}")
+            # message générique : le détail (« connexion refusée », « pas une image »…) dirait si une
+            # adresse répond ; il reste dans le journal
+            log.info("pochette par lien non récupérée (%s) : %s", url[:200], exc)
+            raise HTTPException(400, "Image inaccessible depuis Onde.")
     else:
         raw = body
     cid = await run_in_threadpool(covers.store_cover, raw)

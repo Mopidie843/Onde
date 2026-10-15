@@ -10,7 +10,24 @@ import secrets
 import time
 
 from . import api_models as M
-from . import db, users
+from . import config, db, users
+
+_ready: set[str] = set()  # bases déjà préparées
+
+
+def _ensure_unique() -> None:
+    """Un seul lien par playlist, garanti par la base : deux créations simultanées (double clic, deux
+    appareils) donnaient deux jetons. Les doublons déjà là sont retirés (on garde le plus ancien)."""
+    key = str(config.DB_PATH)
+    if key in _ready:
+        return
+    outer = db.connect().in_transaction  # (transaction de l'appelant : elle pourrait encore être annulée)
+    with db.tx():
+        db.x("""DELETE FROM shares WHERE EXISTS (SELECT 1 FROM shares s2 WHERE s2.playlist_id = shares.playlist_id
+                AND (s2.created < shares.created OR (s2.created = shares.created AND s2.rowid < shares.rowid)))""")
+        db.x("CREATE UNIQUE INDEX IF NOT EXISTS ux_shares_playlist ON shares(playlist_id)")
+    if not outer:
+        _ready.add(key)
 
 
 def _playlist(pid: int):
@@ -18,7 +35,7 @@ def _playlist(pid: int):
 
 
 def of_playlist(pid: int) -> dict | None:
-    r = db.q1("SELECT * FROM shares WHERE playlist_id=?", pid)
+    r = db.q1("SELECT * FROM shares WHERE playlist_id=? ORDER BY created, rowid LIMIT 1", pid)  # (le plus ancien)
     return {"token": r["token"], "path": f"/share/{r['token']}", "created": r["created"], "views": r["views"]} if r else None
 
 
@@ -28,12 +45,15 @@ def create(pid: int) -> dict:
         raise KeyError(pid)
     if p["owner_id"] != users.uid() and not users.is_admin():
         raise PermissionError("Ce n'est pas ta playlist.")
+    _ensure_unique()
     cur = of_playlist(pid)
     if cur:
         return cur
     token = secrets.token_urlsafe(12)
-    db.x("INSERT INTO shares(token, playlist_id, owner_id, created) VALUES(?,?,?,?)", token, pid, p["owner_id"], time.time())
-    users.log_activity("share", f"playlist « {p['name']} » partagée")
+    added = db.x("INSERT OR IGNORE INTO shares(token, playlist_id, owner_id, created) VALUES(?,?,?,?)",
+                 token, pid, p["owner_id"], time.time()).rowcount
+    if added:  # (sinon : créé au même instant par une autre requête, on renvoie celui-là)
+        users.log_activity("share", f"playlist « {p['name']} » partagée")
     return of_playlist(pid)
 
 

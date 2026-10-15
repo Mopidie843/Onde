@@ -2,7 +2,8 @@
 un album ou un single, et le télécharge tout seul (comme une recherche par nom), une fois.
 
 Seules les sorties parues APRÈS le moment où tu as commencé à suivre l'artiste sont prises (pas toute sa
-discographie). Au plus 3 sorties et 30 titres par artiste et par vérification.
+discographie). Au plus 3 sorties et 30 titres par artiste et par vérification. Une sortie dont rien n'a
+pu être téléchargé (pas d'Internet, Onde arrêté en plein téléchargement…) est retentée, 3 fois au plus.
 """
 from __future__ import annotations
 
@@ -11,12 +12,13 @@ import threading
 import time
 import urllib.parse
 
-from . import covers, db, downloader, first_run, notify
+from . import config, covers, db, downloader, first_run, notify
 
 log = logging.getLogger("onde.follow")
 CHECK_EVERY = 12 * 3600
 MAX_RELEASES = 3
 MAX_TRACKS = 30
+MAX_TRIES = 3       # essais par sortie tant que rien n'a été téléchargé
 _stop = threading.Event()
 _lock = threading.Lock()
 status = {"running": False, "last": None, "downloaded": 0, "error": None}
@@ -33,8 +35,23 @@ CREATE TABLE IF NOT EXISTS releases(
 """
 
 
+_ready: set[str] = set()  # bases déjà préparées (une fois, pas à chaque page d'artiste)
+
+
 def ensure() -> None:
-    db.connect().executescript(SCHEMA)
+    """Crée les tables au premier usage. Une instruction à la fois, sans executescript : il validerait
+    en douce (COMMIT implicite) la transaction en cours de l'appelant."""
+    key = str(config.DB_PATH)
+    if key in _ready:
+        return
+    conn = db.connect()
+    for stmt in SCHEMA.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    if "tries" not in {r["name"] for r in conn.execute("PRAGMA table_info(releases)")}:
+        conn.execute("ALTER TABLE releases ADD COLUMN tries INT NOT NULL DEFAULT 0")  # essais (sorties ratées)
+    if not conn.in_transaction:  # (dans une transaction qui serait annulée, les tables disparaîtraient avec)
+        _ready.add(key)
 
 
 def following() -> list[dict]:
@@ -77,6 +94,13 @@ def _deezer_artist(name: str) -> dict | None:
     return None
 
 
+def _pending(rid: str) -> bool:
+    """Sortie à traiter : jamais vue, ou vue sans qu'aucun titre n'ait pu être téléchargé (moins de
+    MAX_TRIES fois). Les titres récupérés lors d'un essai précédent sont sautés (déjà dans la bibliothèque)."""
+    r = db.q1("SELECT downloaded, tries FROM releases WHERE id=?", rid)
+    return r is None or (not r["downloaded"] and r["tries"] < MAX_TRIES)
+
+
 def _check_artist(key: str, name: str, since: float) -> int:
     artist = _deezer_artist(name)
     if not artist:
@@ -84,7 +108,7 @@ def _check_artist(key: str, name: str, since: float) -> int:
     data = covers.deezer_api(f"https://api.deezer.com/artist/{artist['id']}/albums?limit=25")
     since_day = time.strftime("%Y-%m-%d", time.localtime(since))
     fresh = [a for a in (data.get("data") or []) if (a.get("release_date") or "") >= since_day
-             and not db.q1("SELECT 1 FROM releases WHERE id=?", f"dz:{a.get('id')}")]
+             and _pending(f"dz:{a.get('id')}")]
     fresh.sort(key=lambda a: a.get("release_date") or "")
     got = 0
     for alb in fresh[:MAX_RELEASES]:
@@ -93,9 +117,11 @@ def _check_artist(key: str, name: str, since: float) -> int:
         db.x("INSERT OR IGNORE INTO releases(id, artist_key, title, date, cover, tracks, seen) VALUES(?,?,?,?,?,?,?)",
              rid, key, alb.get("title") or "", alb.get("release_date") or "", alb.get("cover_medium") or "",
              len(tracks), time.time())
+        # compté dès le début : un arrêt (ou un plantage) pendant le téléchargement vaut un essai
+        db.x("UPDATE releases SET tries = tries + 1 WHERE id=?", rid)
         n = 0
         for t in tracks[:MAX_TRACKS]:
-            if _stop.is_set():
+            if _stop.is_set():  # arrêt d'Onde : « downloaded » reste à 0, la sortie sera retentée
                 return got
             a_name = (t.get("artist") or {}).get("name") or name
             title = t.get("title") or ""

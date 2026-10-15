@@ -16,6 +16,7 @@ from . import config
 
 log = logging.getLogger("onde.transcode")
 _locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+CONVERT_TIMEOUT = 900  # s
 
 
 def available() -> bool:
@@ -29,8 +30,11 @@ def cached(track_id: int, path: str, mtime: float) -> Path:
     key = f"{track_id}_{int(mtime)}"
     out = config.TRANSCODE_DIR / f"{key}.flac"
     if out.exists():
-        os.utime(out)  # LRU : le plus récemment écouté reste en cache
-        return out
+        try:
+            os.utime(out)  # LRU : le plus récemment écouté reste en cache
+            return out
+        except FileNotFoundError:
+            pass  # supprimé entre-temps par le ménage du cache (prune) : on le refait
     with _locks[key]:
         if out.exists():
             return out
@@ -40,10 +44,14 @@ def cached(track_id: int, path: str, mtime: float) -> Path:
                "-map", "0:a:0", "-vn", "-c:a", "flac", "-compression_level", "0",
                "-sample_fmt", "s16", tmp]
         try:
-            subprocess.run(cmd, check=True, timeout=900, capture_output=True)
+            subprocess.run(cmd, check=True, timeout=CONVERT_TIMEOUT, capture_output=True)
         except subprocess.CalledProcessError as exc:
             tmp.unlink(missing_ok=True)
             raise RuntimeError(exc.stderr.decode("utf-8", "replace")[-300:] or "conversion impossible")
+        except subprocess.TimeoutExpired:  # (ffmpeg est arrêté par subprocess.run)
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"Conversion trop longue (plus de {CONVERT_TIMEOUT // 60} min) : "
+                               "le fichier est peut-être abîmé, essaie de le réimporter.")
         os.replace(tmp, out)
     prune()
     return out

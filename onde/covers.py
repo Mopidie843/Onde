@@ -263,15 +263,18 @@ def find_artist_image(name: str) -> str | None:
 
 
 def search_online(query: str, kind: str = "album", limit: int = 12) -> dict:
+    """Propositions de pochettes (ou de photos d'artiste). `offline` : aucune source n'a répondu, faute
+    de réseau (rien à conclure : la recherche automatique réessaiera plus tard)."""
     query = (query or "").strip()
     if not query:
-        return {"results": [], "errors": []}
+        return {"results": [], "errors": [], "offline": False}
     if kind == "artist":
         try:
-            return {"results": _deezer_artists(query, limit), "errors": []}
+            return {"results": _deezer_artists(query, limit), "errors": [], "offline": False}
         except Exception as exc:
-            return {"results": [], "errors": [f"Deezer : {exc}"]}
+            return {"results": [], "errors": [f"Deezer : {exc}"], "offline": net.is_offline(exc)}
     errors: list[str] = []
+    failures: list[Exception] = []
     lists: list[list[dict]] = []
     with ThreadPoolExecutor(2) as ex:
         futures = {ex.submit(fn, query, kind, limit): name
@@ -281,7 +284,9 @@ def search_online(query: str, kind: str = "album", limit: int = 12) -> dict:
                 lists.append(fut.result())
             except Exception as exc:
                 errors.append(f"{name} : {exc}")
+                failures.append(exc)
                 log.info("recherche pochette %s échouée: %s", name, exc)
+    offline = not lists and all(net.is_offline(exc) for exc in failures)
     # entrelace les sources pour varier les propositions
     results, seen = [], set()
     for i in range(max((len(l) for l in lists), default=0)):
@@ -289,7 +294,7 @@ def search_online(query: str, kind: str = "album", limit: int = 12) -> dict:
             if i < len(lst) and lst[i]["url"] not in seen:
                 seen.add(lst[i]["url"])
                 results.append(lst[i])
-    return {"results": results, "errors": errors}
+    return {"results": results, "errors": errors, "offline": offline}
 
 
 def _itunes_meta(query: str, limit: int) -> list[dict]:

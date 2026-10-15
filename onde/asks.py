@@ -21,13 +21,18 @@ log = logging.getLogger("onde.asks")
 
 MAX_PENDING = 5          # demandes en attente par profil
 MAX_AUTO_PER_DAY = 15    # titres acceptés automatiquement par profil et par jour
+STUCK_AFTER = 15 * 60    # s : demande acceptée restée « downloading » plus longtemps (Onde redémarré) → relancée
 _stop = threading.Event()
 _thread: threading.Thread | None = None
 _lock = threading.Lock()
+_running: set[int] = set()  # demandes dont le téléchargement tourne dans ce processus
 
-# versions retouchées qu'on ne veut pas dans la bibliothèque
+# versions retouchées qu'on ne veut pas dans la bibliothèque. Les durées seulement en toutes lettres
+# (« 1 hour », « 10 heures ») ou suivies de loop/version (« 1h loop ») : « 24h », « 2h du mat » ou
+# « Loop » sont de vrais titres de chansons.
 JUNK = re.compile(r"\b(nightcore|sped ?up|speed ?up|8d( audio)?|bass ?boost(ed)?|earrape|"
-                  r"\d+\s*(h|heures?|hours?)\b|1 hour|10 hours|loop|type beat|karaoke|instrumental version)\b", re.I)
+                  r"(1|2|3|5|8|10|12|24)\s*(hours?|heures?)|\d+\s*h(ours?)?\s+(loop|version)|loop version|"
+                  r"type beat|karaoke|instrumental version)\b", re.I)
 # paroles clairement haineuses (appel à la haine) : la demande est refusée
 HATE = re.compile(r"\b(sieg heil|heil hitler|white power|mort aux (juifs|arabes|noirs|musulmans|chretiens)|"
                   r"gas the|kill all (jews|blacks|muslims))\b", re.I)
@@ -134,18 +139,55 @@ def approve(ask_id: int, by: str = "admin", reason: str = "", wait: bool = False
         return get(ask_id)
     if not _decide(ask_id, "downloading", by, reason or "Accepté : téléchargement en cours"):
         raise ValueError("Cette demande a déjà une réponse.")
-    t = threading.Thread(target=_download, args=(ask_id,), name="onde-ask", daemon=True)
-    t.start()
+    t = _launch(ask_id)
     if wait:
         t.join(600)
     return get(ask_id)
 
 
+def _launch(ask_id: int) -> threading.Thread:
+    with _lock:
+        _running.add(ask_id)
+    t = threading.Thread(target=_download, args=(ask_id,), name="onde-ask", daemon=True)
+    t.start()
+    return t
+
+
+def resume_stuck(now: float | None = None) -> int:
+    """Demandes acceptées restées « downloading » (Onde redémarré pendant le téléchargement) : sans ça
+    elles le resteraient pour toujours, et l'anti-doublon bloquerait toute nouvelle demande du titre.
+    Relance le téléchargement. Renvoie leur nombre."""
+    now = time.time() if now is None else now
+    rows = db.q("SELECT id FROM asks WHERE kind='track' AND status='downloading' AND COALESCE(decided, created) <= ? "
+                "ORDER BY id", now - STUCK_AFTER)
+    n = 0
+    for r in rows:
+        with _lock:
+            if r["id"] in _running:  # téléchargement (long) toujours en cours ici
+                continue
+            _running.add(r["id"])
+        log.info("demande %s restée en cours de téléchargement : relancée", r["id"])
+        _launch(r["id"])
+        n += 1
+    return n
+
+
 def _download(ask_id: int) -> None:
+    try:
+        _download_now(ask_id)
+    finally:
+        with _lock:
+            _running.discard(ask_id)
+
+
+def _download_now(ask_id: int) -> None:
     from . import downloader  # (import tardif : downloader est lourd)
     a = get(ask_id)
-    user = users.get(a["userId"]) if a else None
-    if not a or not user:
+    if not a:
+        return
+    user = users.get(a["userId"])
+    if not user:  # profil supprimé entre-temps : la demande ne reste pas « en cours » pour toujours
+        db.x("UPDATE asks SET status='failed', reason=? WHERE id=?", "Profil supprimé", ask_id)
         return
     with users.use(user):
         try:
@@ -295,6 +337,7 @@ def _loop() -> None:
     while not _stop.wait(20):
         try:
             tick()
+            resume_stuck()  # (dès le démarrage : rien ne télécharge encore dans ce processus)
         except Exception:
             log.exception("demandes")
 

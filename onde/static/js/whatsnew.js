@@ -3,6 +3,11 @@ import { esc, icon, storage } from "./util.js";
 import { openModal } from "./ui.js";
 
 const NEWS = {
+  "1.3.6": [
+    ["lock", "Plus sûr", "Réinitialisation de mot de passe, adresses de connexion, import par lien et profils supprimés : plusieurs failles fermées."],
+    ["disc", "Bibliothèque protégée", "Un disque débranché ne vide plus ta bibliothèque, et les pochettes ou nouveautés sont retentées après une coupure de réseau."],
+    ["refresh", "Playlists et notifications", "L'annulation d'un retrait remet le titre à la bonne place ; les notifications ne vont plus qu'au bon profil."],
+  ],
   "1.3.5": [
     ["sparkles", "Ton année", "Ton bilan d'écoute façon « Wrapped » : un bouton sur la page Statistiques ouvre tes tops, tes records et tes habitudes en diapositives."],
     ["refresh", "Mise à jour automatique plus fiable", "Onde retrouve le bon zip même si le dépôt publie aussi Onde.exe et Onde.apk."],

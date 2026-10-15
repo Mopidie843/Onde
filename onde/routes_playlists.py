@@ -1,6 +1,7 @@
 """Playlists : intelligentes (règles), pistes, import, export, pochette, téléchargement."""
 from __future__ import annotations
 
+import math
 import os
 import re
 import time
@@ -70,6 +71,13 @@ def smart_delete(sid: int):
     return {"ok": True}
 
 
+def _normalize_positions(pid: int) -> int:
+    """Renumérote les positions 0, 1, 2… (le rang d'une entrée est alors aussi sa position) ; renvoie le nombre d'entrées."""
+    rows = db.q("SELECT id FROM playlist_tracks WHERE playlist_id=? ORDER BY position, id", pid)
+    db.many("UPDATE playlist_tracks SET position=? WHERE id=?", [(i, r["id"]) for i, r in enumerate(rows)])
+    return len(rows)
+
+
 def _add_to_playlist(pid: int, ids: list[int], position: int | None = None) -> int:
     now = time.time()
     with db.tx():
@@ -80,8 +88,8 @@ def _add_to_playlist(pid: int, ids: list[int], position: int | None = None) -> i
         keep = [t for t in ids if t in valid]
         if position is None:
             start = db.q1("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id=?", pid)["p"]
-        else:  # insertion à une position précise (annuler un retrait)
-            start = max(0, position)
+        else:  # insertion à un rang précis (annuler un retrait) : on renumérote d'abord, rang = position
+            start = min(max(0, position), _normalize_positions(pid))
             db.x("UPDATE playlist_tracks SET position = position + ? WHERE playlist_id=? AND position >= ?",
                  len(keep), pid, start)
         rows = [(pid, tid, start + i, now) for i, tid in enumerate(keep)]
@@ -98,23 +106,25 @@ def add_tracks(pid: int, body: dict = Body(...)):
         present = {r["track_id"] for r in db.q("SELECT track_id FROM playlist_tracks WHERE playlist_id=?", pid)}
         ids = [i for i in dict.fromkeys(ids) if i not in present]
     pos = body.get("position")
-    added = _add_to_playlist(pid, ids, int(pos) if isinstance(pos, (int, float)) else None)
+    at = int(pos) if isinstance(pos, (int, float)) and not isinstance(pos, bool) and math.isfinite(pos) else None
+    added = _add_to_playlist(pid, ids, at)
     return {"added": added, "playlist": _playlist(pid)}
 
 
 @router.delete("/api/playlists/{pid}/entries/{eid}")
 def remove_entry(pid: int, eid: int):
+    """Retire une entrée. Son rang (`index`) se renvoie tel quel en `position` pour annuler le retrait."""
     _playlist(pid)
-    row = db.q1("SELECT track_id, (SELECT COUNT(*) FROM playlist_tracks p2 WHERE p2.playlist_id=pt.playlist_id "
-                "AND p2.position < pt.position) AS idx FROM playlist_tracks pt WHERE id=? AND playlist_id=?", eid, pid)
-    db.x("DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", eid, pid)
-    db.x("UPDATE playlists SET updated_at=? WHERE id=?", time.time(), pid)
-    return {"ok": True, "trackId": row["track_id"] if row else None, "index": row["idx"] if row else None}
-
-
-def _normalize_positions(pid: int) -> None:
-    rows = db.q("SELECT id FROM playlist_tracks WHERE playlist_id=? ORDER BY position, id", pid)
-    db.many("UPDATE playlist_tracks SET position=? WHERE id=?", [(i, r["id"]) for i, r in enumerate(rows)])
+    with db.tx():
+        row = db.q1("SELECT track_id, (SELECT COUNT(*) FROM playlist_tracks p2 WHERE p2.playlist_id=pt.playlist_id "
+                    "AND (p2.position < pt.position OR (p2.position = pt.position AND p2.id < pt.id))) AS idx "
+                    "FROM playlist_tracks pt WHERE id=? AND playlist_id=?", eid, pid)
+        if not row:
+            _404("Entrée introuvable (déjà retirée de la playlist ?)")
+        db.x("DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", eid, pid)
+        _normalize_positions(pid)  # sinon, après plusieurs retraits, rang et position ne coïncident plus
+        db.x("UPDATE playlists SET updated_at=? WHERE id=?", time.time(), pid)
+    return {"ok": True, "trackId": row["track_id"], "index": row["idx"]}
 
 
 @router.get("/api/playlists/{pid}/export")

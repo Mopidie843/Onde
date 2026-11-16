@@ -77,7 +77,8 @@ def _diversify(scored: list[tuple[float, dict]], limit: int) -> list[int]:
 
 
 def radio(seed_tracks: list[int] | None = None, artist: str | None = None, genre: str | None = None,
-          exclude: set[int] | None = None, limit: int = 40) -> list[int]:
+          exclude: set[int] | None = None, limit: int = 40, rng: random.Random | None = None) -> list[int]:
+    rng = rng or random  # (tirage propre à l'appel : jamais le générateur global, partagé entre les requêtes en parallèle)
     rows = _catalog()
     if not rows:
         return []
@@ -99,7 +100,7 @@ def radio(seed_tracks: list[int] | None = None, artist: str | None = None, genre
     for r in rows:
         if r["id"] in exclude:
             continue
-        s = random.random() * 1.6
+        s = rng.random() * 1.6
         if r["artist"] in artists:
             s += 2.6
         elif r["aartist"] in artists:
@@ -194,13 +195,8 @@ def weekly(limit: int = 50) -> list[int]:
         return []
     heard = {tid for tid, _ in _user_plays(month)}
     week = time.strftime("%G-%V")
-    state = random.getstate()
-    random.seed(f"{week}:{db.current_uid.get()}")
-    try:
-        ids = radio(seed_tracks=seeds, exclude=heard | set(seeds), limit=limit)
-    finally:
-        random.setstate(state)
-    return ids
+    return radio(seed_tracks=seeds, exclude=heard | set(seeds), limit=limit,
+                 rng=random.Random(f"{week}:{db.current_uid.get()}"))
 
 
 def last_year() -> list[int]:

@@ -138,6 +138,7 @@ export class Player extends EventTarget {
 
   // ------------------------------------------------------------ lecture
   playList(ids, start = 0, source = null) {
+    this._stopXf();
     ids = ids.filter((x) => x != null);
     if (!ids.length) return;
     start = Math.max(0, Math.min(start, ids.length - 1));
@@ -271,13 +272,14 @@ export class Player extends EventTarget {
     if (!this.hasTrack) return;
     if (!this.audio.currentSrc || this.audio.currentSrc === SILENT_SRC) { this._start(this.lastPos, true); return; }
     if (this.audio.paused) { this._applyVolume(); this._play(); }
-    else { this.wantPlay = false; this.audio.pause(); }
+    else { this.wantPlay = false; this._stopXf(); this.audio.pause(); }
   }
   play() { if (this.paused) this.toggle(); }
   pause() { if (!this.paused) this.toggle(); }
 
   next(auto = false) {
     if (!this.queue.length) return;
+    if (!auto) this._stopXf();
     if (this.mode === "pi") return this._pi("next");
     if (auto && this.sleep.end) { // minuterie « fin du titre » : on s'arrête sur le suivant
       this.sleep = { at: 0, end: false };
@@ -302,6 +304,7 @@ export class Player extends EventTarget {
   }
 
   prev() {
+    this._stopXf();
     if (!this.queue.length) return;
     if (this.mode === "pi") return this._pi("prev");
     if (this.audio.currentTime > 3 || this.index === 0) { this.seek(0); return; }
@@ -314,6 +317,7 @@ export class Player extends EventTarget {
   }
 
   jump(i) {
+    this._stopXf();
     if (i < 0 || i >= this.queue.length) return;
     if (this.mode === "pi") { this.index = i; return this._pi("jump", { index: i }); }
     this.index = i;
@@ -398,6 +402,8 @@ export class Player extends EventTarget {
     this.crossfade = Math.max(0, Math.min(12, +sec || 0));
     storage.set("onde.crossfade", this.crossfade);
   }
+  /** Coupe le lecteur « fantôme » du fondu enchaîné (pause, autre titre choisi, mode enceinte). */
+  _stopXf() { try { if (this._xf && this._xf.abort) this._xf.abort(); } catch { /* ignore */ } this._xf = null; }
   _hasNext() { return this.index + 1 < this.queue.length || (this.repeat === "all" && this.queue.length > 1); }
   // Quelques secondes avant la fin : la fin du titre continue dans un second lecteur qui baisse
   // doucement, pendant que le titre suivant démarre en montant. (Annulé sans bruit si ça ne marche pas.)
@@ -407,9 +413,10 @@ export class Player extends EventTarget {
       || !d || d < xf * 3 || d - t > xf || this.audio.paused) return;
     const ghost = new Audio();
     ghost.preload = "auto";
-    const job = this._xf = { ghost, done: false };
+    const job = this._xf = { ghost, done: false, abort: null };
     const startVol = this.audio.volume * (this._graph ? this._graph.out.gain.value : 1);
     const abort = () => { if (job.done) return; job.done = true; try { ghost.pause(); ghost.removeAttribute("src"); ghost.load(); } catch { /* ignore */ } if (this._xf === job) this._xf = null; };
+    job.abort = abort;
     const timer = setTimeout(abort, 2500);
     ghost.addEventListener("loadedmetadata", () => { try { ghost.currentTime = this.audio.currentTime + 0.15; } catch { /* ignore */ } }, { once: true });
     ghost.addEventListener("playing", () => {
@@ -483,7 +490,8 @@ export class Player extends EventTarget {
     return Promise.resolve();
   }
   _checkSleep() {
-    if ((!this.sleep.at && !this.sleep.end) || this.audio.paused) return;
+    if (!this.sleep.at && !this.sleep.end) return;
+    if (this.audio.paused && !(this.sleep.at && this.sleep.at <= Date.now())) return; // en pause : seule l'échéance compte
     const left = this.sleep.at ? (this.sleep.at - Date.now()) / 1000 : 1;
     if (left <= 0) {
       this.sleep = { at: 0, end: false };
@@ -657,7 +665,7 @@ export class Player extends EventTarget {
     a.addEventListener("error", () => this._onError());
     a.addEventListener("loadedmetadata", () => { this._g.dirty = true; });
     a.addEventListener("emptied", () => { this._g.dirty = true; });
-    setInterval(() => { try { this._guardTick(); } catch { /* le garde-fou ne doit jamais gêner la lecture */ } }, 1000);
+    setInterval(() => { try { this._checkSleep(); this._guardTick(); } catch { /* le garde-fou ne doit jamais gêner la lecture */ } }, 1000);
     for (const ev of ["hashchange", "visibilitychange", "focus", "pageshow"]) {
       addEventListener(ev, () => { try { this._guardWake(); } catch { /* ignore */ } });
     }
@@ -784,11 +792,22 @@ export class Player extends EventTarget {
     if (code === 3 || code === 4) {
       // Erreur de « format » : soit le fichier est vraiment illisible, soit le Wi-Fi a coupé
       // pile au changement de titre. On vérifie que le serveur répond avant de passer au suivant.
-      let reachable = false;
+      let reachable = false, status = 0;
       try {
-        await fetch(`/api/tracks/${this.currentId}/stream`, { headers: { Range: "bytes=0-1" }, cache: "no-store" });
+        const r = await fetch(`/api/tracks/${this.currentId}/stream`, { headers: { Range: "bytes=0-1" }, cache: "no-store" });
         reachable = true;
+        status = r.status;
       } catch { /* réseau indisponible */ }
+      if (reachable && (status === 401 || status === 403)) {
+        this.dispatchEvent(new CustomEvent("problem", { detail: "Session expirée : reconnecte-toi." }));
+        return;
+      }
+      if (reachable && status === 404) { // fichier absent du serveur : on saute, sans accuser le format
+        this.dispatchEvent(new CustomEvent("problem", { detail: "Ce titre est introuvable sur le serveur — titre suivant." }));
+        if (this.index + 1 < this.queue.length) this.next(false);
+        return;
+      }
+      if (reachable && status >= 500) { this._reload(); return; } // panne passagère du serveur : on réessaie
       if (reachable) {
         const t = this.current;
         if (t && t.ext && canPlayExt(t.ext) && !src.includes("t=1")) {
@@ -960,7 +979,7 @@ export class Player extends EventTarget {
       const playing = !this.audio.paused;
       this.wantPlay = false;
       this.audio.pause();
-      this.mode = "pi";
+      this._stopXf(); this.mode = "pi";
       this.pi.rev = -1;
       const st = this.pi.state || await api.get("/api/pi/state").catch(() => null);
       if (!adopt && this.hasTrack) {

@@ -12,11 +12,13 @@ Sans source, rien ne se passe (la mise à jour à la main, avec le zip, marche t
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import os
 import re
 import threading
 import time
+import zipfile
 
 from . import config, net, restart, settings, updater
 
@@ -61,7 +63,7 @@ def latest(src: str | None = None) -> dict | None:
     if re.fullmatch(r"[\w.-]+/[\w.-]+", src):
         # Le dépôt publie aussi d'autres « releases » (Onde.exe, Onde.apk) : « la dernière » n'est donc pas
         # forcément celle du zip. On parcourt les récentes et on prend la plus récente qui en contient un.
-        rels = net.get_json(f"https://api.github.com/repos/{src}/releases?per_page=30",
+        rels = net.get_json(f"https://api.github.com/repos/{src}/releases?per_page=100",
                             headers={"Accept": "application/vnd.github+json"}, deadline=20)
         for rel in rels if isinstance(rels, list) else [rels]:
             if rel.get("draft") or rel.get("prerelease"):
@@ -77,6 +79,8 @@ def latest(src: str | None = None) -> dict | None:
                 side = next((x for x in assets if str(x.get("name", "")).lower() == str(a["name"]).lower() + ".sha256"), None)
                 if side:
                     sha = net.get_text(side["browser_download_url"], deadline=20).split()[0]
+            if not sha:
+                raise ValueError("Release sans empreinte sha256 (ni « digest » GitHub ni fichier .sha256) : refusée (sécurité).")
             return {"version": version, "url": a["browser_download_url"], "sha256": sha, "notes": str(rel.get("body") or "")[:2000]}
         raise ValueError("Aucune release GitHub ne contient de zip d'Onde.")
     if not src.startswith("https://"):
@@ -110,6 +114,13 @@ def check(install: bool = True) -> dict:
             got = hashlib.sha256(data).hexdigest()
             if got.lower() != info["sha256"].lower():
                 raise ValueError("Empreinte du zip différente de celle annoncée : mise à jour refusée.")
+        try:  # le zip doit contenir la version annoncée (sinon : redémarrage en boucle à chaque contrôle)
+            z = zipfile.ZipFile(io.BytesIO(data))
+            inside = updater.version_of(z, updater._members(z)[0])
+        except (zipfile.BadZipFile, ValueError) as exc:
+            raise ValueError("Fichier zip invalide") from exc
+        if not newer(inside):
+            raise ValueError(f"Le zip contient la version {inside}, pas la version annoncée {info['version']} : mise à jour refusée.")
         res = updater.apply(data)
         status["installed"] = res
         log.warning("mise à jour automatique : %s → %s", res["from"], res["to"])

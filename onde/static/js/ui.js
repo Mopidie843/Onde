@@ -117,6 +117,7 @@ export function openMenu(items, { x = 0, y = 0, anchor = null, head = "", onClos
 }
 
 // ---------------------------------------------------------------- fenêtres
+const modalStack = []; // fenêtres ouvertes : Échap ne ferme que celle du dessus
 export function openModal({ title, body = "", foot = "", wide = false, onMount = null, onClose = null, locked = false }) {
   closeMenu();
   const scrim = document.createElement("div");
@@ -131,11 +132,18 @@ export function openModal({ title, body = "", foot = "", wide = false, onMount =
     ${foot ? `<div class="modal-foot">${foot}</div>` : ""}`;
   layer().append(scrim, modal);
   const prevFocus = document.activeElement;
-  const onKey = (ev) => { if (ev.key === "Escape") { ev.stopPropagation(); if (!locked) close(); } };
+  const onKey = (ev) => {
+    if (ev.key !== "Escape" || modalStack[modalStack.length - 1] !== modal) return;
+    ev.stopPropagation(); ev.stopImmediatePropagation();
+    if (!locked) close();
+  };
+  modalStack.push(modal);
   let closed = false;
   function close() {
     if (closed) return;
     closed = true;
+    const at = modalStack.indexOf(modal);
+    if (at >= 0) modalStack.splice(at, 1);
     scrim.remove(); modal.remove();
     document.removeEventListener("keydown", onKey, true);
     onClose?.();

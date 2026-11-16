@@ -23,7 +23,7 @@ def lib(fresh_db, tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_unwanted_words():
+def test_unwanted_words(fresh_db):
     assert tidy.unwanted("Song (Slowed + Reverb)", "/x/a.mp3") == "slowed"
     assert tidy.unwanted("Calm", "/x/calm - REVERB.mp3") == "reverb"
     assert tidy.unwanted("Reverberation", "/x/r.mp3") is None  # mot entier seulement

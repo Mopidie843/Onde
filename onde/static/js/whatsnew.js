@@ -3,6 +3,11 @@ import { esc, icon, storage } from "./util.js";
 import { openModal } from "./ui.js";
 
 const NEWS = {
+  "1.3.7": [
+    ["play", "Lecteur plus fiable", "Un fichier absent ou une session expirée ne bloquent plus tout un format ; fondu, minuterie et barre de progression corrigés."],
+    ["radio", "Radios et mixes", "« Radio de l'artiste », radios d'album et de playlist, et lecture d'un mix depuis le téléphone fonctionnent."],
+    ["refresh", "Mises à jour plus sûres", "Le zip doit contenir la version annoncée et une empreinte vérifiée ; l'appli Android demande confirmation avant d'ajouter un serveur."],
+  ],
   "1.3.6": [
     ["lock", "Plus sûr", "Réinitialisation de mot de passe, adresses de connexion, import par lien et profils supprimés : plusieurs failles fermées."],
     ["disc", "Bibliothèque protégée", "Un disque débranché ne vide plus ta bibliothèque, et les pochettes ou nouveautés sont retentées après une coupure de réseau."],

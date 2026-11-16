@@ -134,3 +134,25 @@ def test_github_url_source_installs(install, http):
                                           "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]}])
     http.routes["https://github.com/moi/onde/releases/download/v9.9.9/onde-tout.zip"] = httpx.Response(200, content=data)
     assert autoupdate.check()["installed"]["to"] == "9.9.9"
+
+
+def test_release_without_digest_refused(install, http):
+    root, restarts = install
+    settings.update({"update_source": "moi/onde"})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "v9.9.9", "assets": [{"name": "onde-tout.zip", "browser_download_url": "https://x.example/onde-tout.zip"}]}])
+    http.routes["https://x.example/onde-tout.zip"] = httpx.Response(200, content=_zip())
+    st = autoupdate.check()
+    assert "empreinte" in st["error"] and not restarts and (root / "onde" / "main.py").read_text() == "old"
+
+
+def test_zip_with_older_version_than_announced_refused(install, http):
+    root, restarts = install
+    data = _zip(version="0.0.1")  # annonce 9.9.9 mais contient une vieille version : pas de redémarrage en boucle
+    settings.update({"update_source": "moi/onde"})
+    http.routes["https://api.github.com/repos/moi/onde/releases"] = httpx.Response(200, json=[
+        {"tag_name": "v9.9.9", "assets": [{"name": "onde-tout.zip", "browser_download_url": "https://x.example/onde-tout.zip",
+                                          "digest": "sha256:" + hashlib.sha256(data).hexdigest()}]}])
+    http.routes["https://x.example/onde-tout.zip"] = httpx.Response(200, content=data)
+    st = autoupdate.check()
+    assert "annoncée" in st["error"] and not restarts and (root / "onde" / "main.py").read_text() == "old"

@@ -85,3 +85,14 @@ def http(monkeypatch):
     monkeypatch.setattr(net, "BACKOFF", 0.0)
     yield SimpleNamespace(routes=routes, requests=requests)
     net.set_transport(None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_memory_caches():
+    """Remet à zéro les caches mémoire (réglages, catalogue des mixes, accès à distance) : sinon un test
+    dépend de ceux qui l'ont précédé."""
+    from onde import discover, remote, settings
+    settings._cache = None
+    discover.invalidate()
+    remote._cache.update(at=0.0, value=None)
+    yield

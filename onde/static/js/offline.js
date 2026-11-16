@@ -21,6 +21,9 @@ const PROBE_TIMEOUT = 7000;   // (4G qui capte mal : une réponse peut mettre pl
 const PROBE_STRIKES = 2;      // échecs d'affilée avant de passer hors connexion
 const PROBE_EVERY = 8000;    // hors connexion : on revérifie souvent (retour rapide dès que le réseau revient)
 
+// Les compteurs d'écoute changent à chaque écoute : ils ne doivent pas déclencher la réécriture de toute la collection.
+const VOLATILE = new Set(["plays", "popularity", "lastPlayed"]);
+const stable = (x) => JSON.stringify(x, (k, v) => (VOLATILE.has(k) ? undefined : v));
 export const DOWNLOADABLE = /^(album:\d+|playlist:\d+|smart:\d+|liked|recent)$/;
 
 export function pathFor(key) {
@@ -404,7 +407,7 @@ class Offline extends EventTarget {
       if (c.path !== path || this._syncing.has(c.key)) continue;
       const ids = [...new Set(tracksOf(data).map((t) => t.id))];
       const changed = ids.length !== c.ids.length || ids.some((id, i) => id !== c.ids[i])
-        || JSON.stringify(data) !== JSON.stringify(c.meta);
+        || stable(data) !== stable(c.meta);
       if (!changed) continue;
       this._syncing.add(c.key);
       try {

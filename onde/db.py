@@ -278,6 +278,9 @@ def init() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS ix_plays_user ON plays(user_id, played_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_tracks_added_by ON tracks(added_by)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_user ON notifications(user_id, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_playlists_owner ON playlists(owner_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_smart_owner ON smart_playlists(owner_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_tracks_genre ON tracks(genre COLLATE NOCASE)")
     from . import users  # (import ici : users utilise db)
     users.ensure_admin()
 

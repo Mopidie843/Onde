@@ -136,8 +136,10 @@ def _check_artist(key: str, name: str, since: float) -> int:
         db.x("UPDATE releases SET downloaded=? WHERE id=?", n, rid)
         if n:
             got += n
-            notify.add("download", f"Nouveauté : {name}", f"« {alb.get('title')} » — {n} titre(s) ajouté(s)",
-                       "#/artist/" + urllib.parse.quote(name))
+            # seuls les profils qui suivent cet artiste sont prévenus (pas toute la maison)
+            for f in db.q("SELECT DISTINCT user_id FROM follows WHERE artist_key=?", key):
+                notify.add("download", f"Nouveauté : {name}", f"« {alb.get('title')} » — {n} titre(s) ajouté(s)",
+                           "#/artist/" + urllib.parse.quote(name), user_id=f["user_id"])
             log.info("nouveauté de %s : « %s » (%d titres)", name, alb.get("title"), n)
     return got
 

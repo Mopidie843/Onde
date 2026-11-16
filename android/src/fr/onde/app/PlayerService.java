@@ -98,7 +98,8 @@ public class PlayerService extends Service {
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "onde:playback");
             wake.setReferenceCounted(false);
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-            wifi = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, "onde:playback");
+            // (WIFI_MODE_FULL n'a plus d'effet depuis Android 10 : il faut le mode « haute performance » ou « faible latence »)
+            wifi = wm.createWifiLock(Build.VERSION.SDK_INT >= 29 ? 4 /* WIFI_MODE_FULL_LOW_LATENCY */ : WifiManager.WIFI_MODE_FULL_HIGH_PERF, "onde:playback");
             wifi.setReferenceCounted(false);
         } catch (Exception ignored) {}
         publish();

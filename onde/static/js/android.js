@@ -55,7 +55,7 @@ export function bindAndroid(player) {
   });
 
   // adresse à distance : si le serveur la connaît (./start.sh remote), l'appli la retient toute seule
-  api.get("/api/remote").then((r) => {
+  api.get("/api/remote/url").then((r) => {
     if (r && r.mode && r.mode !== "off" && r.url && typeof app.setRemote === "function") {
       let known = "";
       try { known = app.remote() || ""; } catch { /* ignore */ }

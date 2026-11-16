@@ -101,7 +101,10 @@ const router = {
           el = document.createElement("div");
         }
       }
-      if (token !== renderSeq) return;
+      if (token !== renderSeq) { // (on a navigué pendant le chargement : sa fonction de nettoyage ne doit pas être perdue)
+        if (typeof out === "function") { try { out(); } catch { /* ignore */ } }
+        return;
+      }
       if (typeof out === "function") cleanup = out;
     } catch (e) {
       if (token !== renderSeq) return;
@@ -157,8 +160,8 @@ bindDialogs(player, router, {
     ? { icon: "dl-done", label: "Retirer de cet appareil", onClick: () => toggleOffline(key) }
     : { icon: "download-circle", label: "Télécharger sur cet appareil", onClick: () => toggleOffline(key) }) : null),
 });
-bindViews({ setColor, setTopTitle, player, get info() { return info; }, refresh: () => router.refresh() });
-bindViews2({ setColor, setTopTitle, player, get info() { return info; }, refresh: () => router.refresh() });
+bindViews({ setColor, setTopTitle, player, get info() { return info; }, refresh: () => router.refresh(), playKey });
+bindViews2({ setColor, setTopTitle, player, get info() { return info; }, refresh: () => router.refresh(), playKey });
 bindDownloads({ setColor, setTopTitle, player, refresh: () => router.refresh() });
 bindSmart({ setColor, setTopTitle, player, refresh: () => router.refresh() });
 bindDashboard({ setColor });
@@ -226,6 +229,8 @@ document.addEventListener("click", async (e) => {
   const t = e.target;
   const play = t.closest("[data-play]");
   if (play) { e.preventDefault(); e.stopPropagation(); playKey(play.dataset.play); return; }
+  const playOpen = t.closest("[data-play-open]");  // (titre d'un mix : sur téléphone le bouton rond est masqué)
+  if (playOpen) { e.preventDefault(); e.stopPropagation(); playKey(playOpen.dataset.playOpen); return; }
   const dl = t.closest("[data-offline]");
   if (dl) { e.preventDefault(); e.stopPropagation(); toggleOffline(dl.dataset.offline, dl); return; }
   const like = t.closest("[data-like]");
@@ -441,7 +446,10 @@ seekEls.forEach((s) => {
     seeking = false;
     s.classList.remove("drag");
   });
-  s.addEventListener("pointerup", () => s.classList.remove("drag"));
+  const endDrag = () => { seeking = false; s.classList.remove("drag"); }; // (sans cela la barre restait figée si le geste était annulé)
+  s.addEventListener("pointerup", endDrag);
+  s.addEventListener("pointercancel", endDrag);
+  s.addEventListener("blur", endDrag);
 });
 volEl.addEventListener("input", () => player.setVolume(volEl.value / 100));
 volEl.addEventListener("wheel", (e) => { e.preventDefault(); player.setVolume(player.volume + (e.deltaY < 0 ? 0.05 : -0.05)); }, { passive: false });

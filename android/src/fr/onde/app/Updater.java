@@ -168,13 +168,26 @@ final class Updater {
         if (pending != null && (Build.VERSION.SDK_INT < 26 || a.getPackageManager().canRequestPackageInstalls())) install(a, pending);
     }
 
+    private static boolean isSystemActivity(Activity a, Intent i) {
+        try {
+            android.content.pm.ResolveInfo ri = a.getPackageManager().resolveActivity(i, 0);
+            return ri != null && ri.activityInfo != null && ri.activityInfo.applicationInfo != null
+                && (ri.activityInfo.applicationInfo.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                && !a.getPackageName().equals(ri.activityInfo.packageName);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** Réponse d'Android à l'installation. Renvoie true si l'intent était pour nous. */
     static boolean onStatus(Activity a, Intent intent) {
         if (intent == null || !ACTION.equals(intent.getAction())) return false;
         int st = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -999);
         if (st == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
-            if (confirm != null) {
+            // MainActivity est exportée : n'importe quelle appli peut envoyer cet intent. On ne lance donc
+            // que l'écran de confirmation d'une appli SYSTÈME (l'installateur d'Android), jamais autre chose.
+            if (confirm != null && isSystemActivity(a, confirm)) {
                 try { a.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); } catch (Exception ignored) { }
             }
         } else if (st != PackageInstaller.STATUS_SUCCESS) {

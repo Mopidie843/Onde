@@ -264,12 +264,18 @@ class PiPlayer:
             return self.queue[self.index]
         return None
 
-    def _load(self, index: int, position: float = 0.0, play: bool = True) -> None:
+    def _load(self, index: int, position: float = 0.0, play: bool = True, _skipped: int = 0) -> None:
         self.index = index
         tid = self.current_id()
         row = db.q1("SELECT path, duration FROM tracks WHERE id=?", tid) if tid else None
         if not row:
-            self._advance(auto=True)
+            # titre supprimé de la bibliothèque : on passe au suivant (jamais deux fois le même, sinon boucle sans fin)
+            nxt = index + 1 if index + 1 < len(self.queue) else (0 if self.repeat == "all" else None)
+            if nxt is None or _skipped >= len(self.queue):
+                self.paused, self.loaded, self.position = True, False, 0.0
+                self.broadcast()
+                return
+            self._load(nxt, play=play, _skipped=_skipped + 1)
             return
         self.position = position
         self.duration = row["duration"] or 0

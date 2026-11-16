@@ -2,3 +2,5 @@
 *.sh text eol=lf
 onde-tout.zip export-ignore
 onde.json export-ignore
+Onde-Installation-*.exe export-ignore
+windows/installer/*.whl export-ignore

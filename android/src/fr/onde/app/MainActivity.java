@@ -474,7 +474,15 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int req, int result, Intent data) {
         if (req == REQ_FILE && fileCallback != null) {
-            fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data));
+            Uri[] picked = WebChromeClient.FileChooserParams.parseResult(result, data);
+            // (plusieurs fichiers choisis : ils arrivent dans ClipData, que parseResult ignore parfois)
+            if (result == RESULT_OK && data != null && data.getClipData() != null && (picked == null || picked.length <= 1)) {
+                android.content.ClipData clip = data.getClipData();
+                Uri[] all = new Uri[clip.getItemCount()];
+                for (int i = 0; i < all.length; i++) all[i] = clip.getItemAt(i).getUri();
+                picked = all;
+            }
+            fileCallback.onReceiveValue(picked);
             fileCallback = null;
             return;
         }
@@ -597,10 +605,30 @@ public class MainActivity extends Activity {
         return "/login".equals(p) || "/login/".equals(p);
     }
 
+    /** Invitation refusée : on revient là où on était (ton serveur habituel, ou l'écran de départ). */
+    private void backToServerOrSetup() {
+        if (prefs.getString(Prefs.SERVER, null) != null || prefs.getString(Prefs.REMOTE, null) != null) openServer();
+        else showSetup(false);
+    }
+
     private boolean handleJoin(Intent intent) {
         Uri d = intent == null ? null : intent.getData();
         if (d == null || !"onde".equals(d.getScheme()) || !"join".equals(d.getHost())) return false;
-        handleJoinUri(d);
+        final Uri link = d;
+        final String shown = Net.normalize(d.getQueryParameter("server"));
+        if (shown == null) { handleJoinUri(d); return true; }  // (lien invalide : le message d'erreur habituel s'affiche)
+        // Un lien venu d'un site ou d'une appli ne doit jamais changer de serveur sans que tu le saches (hameçonnage).
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Ajouter ce serveur Onde ?")
+            .setMessage("Une invitation veut connecter l'appli à :\n" + shown + "\n\nN'accepte que si tu connais cette adresse.")
+            .setPositiveButton("Ajouter", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dlg, int which) { handleJoinUri(link); }
+            })
+            .setNegativeButton("Annuler", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dlg, int which) { backToServerOrSetup(); }
+            })
+            .setCancelable(false)
+            .show();
         return true;
     }
 
@@ -894,7 +922,12 @@ public class MainActivity extends Activity {
         }).start();
         CookieManager.getInstance().removeAllCookies(null);
         CookieManager.getInstance().flush();
-        if (web != null) web.loadUrl("about:blank");  // (la musique du compte précédent s'arrête)
+        if (web != null) {
+            // le service worker garde les listes du compte (accueil, playlists…) : on lui demande de les oublier,
+            // sinon le compte suivant pourrait les voir (la déconnexion native ne passe pas par /logout)
+            web.evaluateJavascript("try{navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage({type:'forget-data'})}catch(e){}", null);
+            web.loadUrl("about:blank");  // (la musique du compte précédent s'arrête)
+        }
         showLogin(null, "Déconnecté.");
     }
 

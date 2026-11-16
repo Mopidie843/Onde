@@ -370,7 +370,12 @@ export async function playlist(el, [id]) {
         const rows = $$(".row", tl);
         const entries = rows.map((r) => +r.dataset.entry);
         const list = lists.get(tl.dataset.list);
-        if (list) list.ids = rows.map((r) => +r.dataset.tid);
+        if (list) {
+          list.ids = rows.map((r) => +r.dataset.tid);
+          const byEntry = new Map(list.tracks.map((t) => [t.entry ?? t.id, t]));
+          const ordered = rows.map((r) => byEntry.get(+r.dataset.entry) ?? list.tracks.find((t) => t.id === +r.dataset.tid));
+          if (ordered.every(Boolean)) list.tracks = ordered;  // (sélection, glisser et « Retirer » visent les bons titres)
+        }
         rows.forEach((r, i) => { r.dataset.i = i; const n = $(".c-num .n", r); if (n) n.textContent = i + 1; });
         try { await api.put(`/api/playlists/${p.id}/order`, { entries }); } catch (e) { toastError(e); }
       },

@@ -153,6 +153,7 @@ export async function contextTracks(key) {
     case "playlist": { const p = await api.get(`/api/playlists/${arg}`); return { tracks: p.tracks, label: p.name, href: `#/playlist/${arg}`, kind: "la playlist" }; }
     case "artist": { const a = await api.get(`/api/artists/${encodeURIComponent(arg)}`); return { tracks: a.tracks, label: a.name, href: `#/artist/${encodeURIComponent(arg)}`, kind: "l'artiste" }; }
     case "genre": { const g = await api.get(`/api/genres/${encodeURIComponent(arg)}`); return { tracks: g.tracks, label: g.name, href: `#/genre/${encodeURIComponent(arg)}`, kind: "le genre" }; }
+    case "recent": { const r = await api.get("/api/recent"); return { tracks: r.tracks, label: "Écoutés récemment", href: "#/stats", kind: "l'historique" }; }
     case "liked": return { tracks: await api.get("/api/liked"), label: "Titres likés", href: "#/liked", kind: "la playlist" };
     case "smart": { const p = await api.get(`/api/smart/${arg}`); return { tracks: p.tracks, label: p.name, href: `#/smart/${arg}`, kind: "la playlist" }; }
     case "mix": {
@@ -163,13 +164,16 @@ export async function contextTracks(key) {
     case "radio": {
       const [rkind, ...rargs] = arg.split(":");
       const val = rargs.join(":");
-      const param = rkind === "track" ? `track=${val}` : rkind === "album" ? `album=${val}` : rkind === "genre" ? `genre=${encodeURIComponent(val)}` : `artist=${encodeURIComponent(val)}`;
+      const params = { track: `track=${val}`, tracks: `tracks=${val}`, album: `album=${val}`, genre: `genre=${encodeURIComponent(val)}`, artist: `artist=${encodeURIComponent(val)}` };
+      const param = params[rkind];
+      if (!param) throw new Error("Radio inconnue");
       const r = await api.get(`/api/radio?${param}&limit=50`);
       let tracks = r.tracks;
       if (rkind === "track") { await ensureTracks([+val]); const seed = trackCache.get(+val); if (seed) tracks = [seed, ...tracks]; }
-      const label = rkind === "track" ? `Radio · ${trackCache.get(+val)?.title || "titre"}` : rkind === "album" ? "Radio de l'album" : `Radio · ${val}`;
+      const label = rkind === "track" ? `Radio · ${trackCache.get(+val)?.title || "titre"}` : rkind === "album" ? "Radio de l'album" : rkind === "tracks" ? "Radio de la playlist" : `Radio · ${val}`;
       return { tracks, label, href: "#/", kind: "la radio" };
     }
-    default: return { tracks: await api.get("/api/tracks?sort=added"), label: "Tous les titres", href: "#/tracks", kind: "la bibliothèque" };
+    case "tracks": case "all": case "": return { tracks: await api.get("/api/tracks?sort=added"), label: "Tous les titres", href: "#/tracks", kind: "la bibliothèque" };
+    default: throw new Error("Lecture inconnue");
   }
 }

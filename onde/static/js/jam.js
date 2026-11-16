@@ -14,6 +14,8 @@ const changed = () => listeners.forEach((fn) => fn(active));
 
 // (seul l'appareil qui a lancé la soirée reçoit les titres des invités, pas tes autres appareils)
 const HOST_KEY = "onde.jamHost";
+const LAST_KEY = "onde.jamLast"; // { token, n } : dernier titre d'invité déjà ajouté (sinon un rechargement les rajoute tous)
+let lastToken = null;
 
 async function poll() {
   clearTimeout(timer);
@@ -22,12 +24,19 @@ async function poll() {
   try {
     const r = await api.get(`/api/jam?after=${last}&now=${player.currentId || 0}`);
     if (!r.active || r.token !== mine) { storage.set(HOST_KEY, null); if (active) { active = false; changed(); } return; }
+    if (lastToken !== mine) { // nouvelle soirée, ou page rechargée : on reprend là où on s'était arrêté
+      const saved = storage.get(LAST_KEY, null);
+      last = saved && saved.token === mine ? saved.n : 0;
+      lastToken = mine;
+      if (last) return poll();
+    }
     if (!active) { active = true; changed(); }
     if (r.items.length) {
       const ids = r.items.map((i) => i.trackId);
       await ensureTracks(ids).catch(() => {});
       player.addToQueue(ids);
       last = Math.max(last, ...r.items.map((i) => i.n));
+      storage.set(LAST_KEY, { token: mine, n: last });
       const t = trackCache.get(ids[ids.length - 1]);
       toast(r.items.length === 1 ? `${r.items[0].by} a ajouté « ${t?.title || "un titre"} »` : `${r.items.length} titres ajoutés par les invités`);
     }
@@ -44,9 +53,10 @@ export async function openJam() {
   let r;
   try { r = await api.post("/api/jam"); } catch (err) { toastError(err); return; }
   storage.set(HOST_KEY, r.token);
+  last = 0; lastToken = r.token; storage.set(LAST_KEY, { token: r.token, n: 0 });
   active = true; changed(); poll();
   let base = location.origin;
-  try { const rem = await api.get("/api/remote"); if (rem.mode === "public" && rem.url) base = rem.url.replace(/\/$/, ""); } catch { /* ignore */ }
+  try { const rem = await api.get("/api/remote/url"); if (rem.mode === "public" && rem.url) base = rem.url.replace(/\/$/, ""); } catch { /* ignore */ }
   if (/^(localhost|127\.)/.test(location.hostname)) {
     try { const i = await api.get("/api/info"); if (i.urls?.[0]) base = i.urls[0].replace(/\/$/, ""); } catch { /* ignore */ }
   }

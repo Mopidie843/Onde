@@ -84,7 +84,7 @@ let base = location.origin, publicOk = false;
 export async function publicBase() { await refreshBase(); return { base, publicOk }; }
 async function refreshBase() {
   try {
-    const r = await api.get("/api/remote");
+    const r = await api.get("/api/remote/url");
     publicOk = r.mode === "public" && !!r.url;
     if (publicOk) { base = r.url.replace(/\/$/, ""); return; }
   } catch { /* ignore */ }
@@ -160,6 +160,7 @@ function inviteDialog(el) {
       <label>Note (pour toi)<input class="field" name="note" maxlength="80" placeholder="ex. Lucas"></label></form>`,
     foot: `<button class="btn ghost" data-close>Annuler</button><button class="btn white" data-save>Créer le lien</button>`,
     onMount: (m, close) => {
+      $("#inv-form", m).addEventListener("submit", (e) => { e.preventDefault(); $("[data-save]", m).click(); }); // (Entrée dans « Note »)
       $("[data-save]", m).addEventListener("click", async () => {
         const f = new FormData($("#inv-form", m));
         try {

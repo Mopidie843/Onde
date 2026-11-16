@@ -156,7 +156,9 @@ def build(spec: dict) -> tuple[str, list, str, int | None]:
     if order is None:  # « aléatoire » : même ordre toute la semaine (téléchargements hors connexion stables)
         year, week, _ = datetime.date.today().isocalendar()
         seed = year * 100 + week
-        order = f"((t.id * 2654435761 + {seed}) % 4294967296)"
+        # (ajouter la graine ne ferait que décaler l'ordre : on la mélange en multiplicateur, sans dépasser 63 bits)
+        mult = (seed * 2654435761) % 99991 + 2
+        order = f"(((t.id * 2654435761) % 2147483629 * {mult}) % 2147483629)"
     return where, args, order, spec["limit"]
 
 

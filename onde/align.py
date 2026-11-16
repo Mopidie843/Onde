@@ -351,7 +351,7 @@ def run_job(job: dict, on_message=None, timeout: float | None = None,
         raise AlignError(why)
     if result is None:
         tail = "\n".join(errors)
-        if rc in (-9, 137) or "Killed" in tail or _oom(tail):
+        if rc in (-9, 137) or (os.name == "nt" and rc == 9) or "Killed" in tail or _oom(tail):
             raise AlignError("memory", "le système a arrêté le calage faute de mémoire — "
                                        "choisis un modèle plus petit dans les Réglages")
         last = next((l for l in reversed(errors) if l.strip() and not l.startswith(" ")), "")

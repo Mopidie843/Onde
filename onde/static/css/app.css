@@ -1346,3 +1346,14 @@ body.role-listener .ask-cta { display: flex !important; }
 .wr-bars { margin-bottom: 18px; }
 .wr-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 10px; position: relative; z-index: 3; }
 @media (prefers-reduced-motion: reduce) { .wr, .wr-slide { animation: none; transition: none; } }
+
+/* ---------- Compléter automatiquement avec les infos en ligne ---------- */
+.meta-online { margin: 4px 0 14px; }
+.meta-online > summary { cursor: pointer; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.meta-res { display: grid; gap: 6px; margin-top: 10px; max-height: 260px; overflow-y: auto; }
+.meta-opt { display: flex; gap: 10px; align-items: center; text-align: left; padding: 6px; border-radius: 8px; transition: background .15s; }
+.meta-opt:hover { background: #ffffff10; }
+.meta-opt.sel { background: #ffffff1c; outline: 1px solid var(--accent); }
+.meta-opt img { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; background: var(--elev); flex: none; }
+.meta-opt .mo-t { display: grid; min-width: 0; font-size: 13px; }
+.meta-opt .mo-t small { color: var(--dim); }

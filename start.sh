@@ -7,7 +7,7 @@
 #   ./start.sh open         lance Onde en arrière-plan et ouvre le navigateur
 #   ./start.sh kiosk        Onde en plein écran sur l'écran du Pi
 #   ./start.sh server       le Pi devient un serveur : démarrage seul, onde.local, sauvegardes   [share | headless | status]
-#   ./start.sh remote       Onde accessible depuis Internet / la 4G (Tailscale)   [private | public | status | off]
+#   ./start.sh remote       Onde accessible depuis Internet / la 4G (Tailscale)   [private | public | tunnel | status | off]
 #   ./start.sh ia           paroles synchronisées par IA (calage sur la voix, ~1 Go à télécharger)
 #   ./start.sh hotspot      le Pi diffuse son propre Wi-Fi (voiture, sans box)   [auto = mode voiture | off | status]
 #   ./start.sh restart | stop | status | logs | update | uninstall
@@ -793,11 +793,71 @@ remote_setup() {  # remote_setup private|public
   say "Dans l'appli Onde (Android), l'adresse à distance est retenue toute seule dès que tu t'y connectes une fois depuis la maison."
 }
 
+# ── Sans Tailscale : tunnel Cloudflare (cloudflared). Connexion SORTANTE seulement : aucun port à ouvrir sur la
+#    box, rien à installer sur le téléphone (juste l'appli Onde ou le navigateur). Adresse https://….trycloudflare.com
+#    (certificat valide, trafic chiffré) qui change quand le tunnel redémarre ; Onde la retient tout seul.
+#    Comme « public » : mot de passe d'au moins 8 caractères obligatoire.
+TUNNEL_UNIT="$UNIT_DIR/onde-tunnel.service"
+TUNNEL_BIN="$DIR/cloudflared"
+
+tunnel_install() {
+  [ -x "$TUNNEL_BIN" ] && return 0
+  local arch; case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; arm*) arch=arm ;; *) die "Processeur non pris en charge par cloudflared : $(uname -m)" ;; esac
+  apt_need curl curl || die "curl est nécessaire pour télécharger cloudflared."
+  say "Téléchargement de cloudflared (github.com/cloudflare/cloudflared, ~35 Mo)"
+  curl -fsSL -o "$TUNNEL_BIN.part" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch" \
+    || { rm -f "$TUNNEL_BIN.part"; die "Téléchargement de cloudflared impossible (pas d'Internet ?)."; }
+  chmod +x "$TUNNEL_BIN.part" && mv "$TUNNEL_BIN.part" "$TUNNEL_BIN"
+  "$TUNNEL_BIN" --version >/dev/null 2>&1 || { rm -f "$TUNNEL_BIN"; die "cloudflared téléchargé ne démarre pas sur cette machine."; }
+}
+
+tunnel_setup() {
+  local pass data log target n url; pass="$(envval ONDE_PASSWORD "")"; data="$(envval ONDE_DATA_DIR "$LOG_DIR")"; log="$data/tunnel.log"
+  if [ "${#pass}" -lt 8 ]; then
+    die "Tunnel : un mot de passe d'au moins 8 caractères est obligatoire (Internet entier peut atteindre la page de connexion). Mets ONDE_PASSWORD=... dans onde.env (ou dans les Réglages d'Onde), puis ./start.sh restart et relance cette commande."
+  fi
+  warn "Toute personne qui connaît l'adresse peut atteindre la page de connexion. Choisis un mot de passe long et unique."
+  tunnel_install
+  mkdir -p "$UNIT_DIR" "$data"; : > "$log"
+  case "$(envval ONDE_HTTPS 0)" in 1|yes|true|on) target="https://127.0.0.1:$(port) --no-tls-verify" ;; *) target="http://127.0.0.1:$(port)" ;; esac
+  cat > "$TUNNEL_UNIT" <<UNITEOF
+[Unit]
+Description=Onde : tunnel Cloudflare (accès à distance)
+After=network-online.target
+
+[Service]
+ExecStart=$TUNNEL_BIN tunnel --no-autoupdate --url $target --logfile $log
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+UNITEOF
+  systemctl --user daemon-reload
+  systemctl --user enable --now onde-tunnel >/dev/null 2>&1 || die "Le tunnel n'a pas démarré (systemctl --user status onde-tunnel)."
+  say "Ouverture du tunnel…"
+  url=""
+  for n in $(seq 1 30); do
+    url="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null | tail -1 || true)"
+    [ -n "$url" ] && break
+    sleep 1
+  done
+  [ -n "$url" ] || die "Pas d'adresse reçue après 30 s (journal : $log)."
+  ok "Onde est joignable depuis n'importe où : $url"
+  say "Elle demande le mot de passe d'Onde. L'adresse change si le tunnel redémarre : ${B}./start.sh remote status${N} l'affiche, et l'appli Android la retient toute seule dès que tu t'y connectes depuis la maison."
+}
+
+tunnel_off() {
+  systemctl --user disable --now onde-tunnel >/dev/null 2>&1 || true
+  rm -f "$TUNNEL_UNIT"; systemctl --user daemon-reload 2>/dev/null || true
+}
+
 remote_status() {
   if [ -x "$PY" ]; then "$PY" -m onde.remote || true; else warn "Onde n'est pas encore installé : ./start.sh"; fi
 }
 
 remote_off() {
+  tunnel_off
   have tailscale || { ok "Rien à retirer : Tailscale n'est pas installé."; return 0; }
   as_root tailscale serve reset >/dev/null 2>&1 || true
   ok "Partage retiré : plus d'adresse https ni d'accès public. Tailscale reste connecté (tes appareils Tailscale joignent encore le Pi par son adresse 100.x) ; ./start.sh remote pour repartir."
@@ -866,9 +926,10 @@ case "$cmd" in
     case "${2:-private}" in
       private|prive|privé|on) remote_setup private ;;
       public|funnel)          remote_setup public ;;
+      tunnel|cloudflare)      tunnel_setup ;;
       status)                 remote_status ;;
       off|stop)               remote_off ;;
-      *) die "Usage : ./start.sh remote [private|public|status|off]" ;;
+      *) die "Usage : ./start.sh remote [private|public|tunnel|status|off]" ;;
     esac
     ;;
   ia|ai|align)

@@ -8,12 +8,18 @@ Onde n'ouvre aucun port sur ta box. `./start.sh remote` installe Tailscale sur l
                          à installer sur le téléphone. Le mot de passe d'Onde (8 caractères au moins) est alors
                          obligatoire, et les essais ratés bloquent l'adresse du visiteur 15 minutes.
 
-Ce module ne fait que LIRE l'état de Tailscale (pour les Réglages et l'appli Android).
+  tunnel (sans Tailscale) `./start.sh remote tunnel` : un tunnel Cloudflare (cloudflared) sortant, sans compte
+                         ni port à ouvrir ni appli sur le téléphone ; adresse https://….trycloudflare.com qui
+                         change à chaque redémarrage du tunnel (l'appli Onde la retient toute seule). Comme le
+                         mode public : mot de passe d'Onde obligatoire (8 caractères au moins).
+
+Ce module ne fait que LIRE l'état de Tailscale ou du tunnel (pour les Réglages et l'appli Android).
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -95,6 +101,31 @@ def _points_here(cfg) -> bool:
     return False
 
 
+_TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+
+def tunnel_url() -> str | None:
+    """Adresse du tunnel Cloudflare en cours, lue dans son journal (la dernière annoncée), s'il tourne."""
+    try:
+        text = (config.DATA_DIR / "tunnel.log").read_text(encoding="utf-8", errors="replace")[-20000:]
+    except OSError:
+        return None
+    found = _TUNNEL_URL.findall(text)
+    if not found or not _tunnel_running():
+        return None
+    return found[-1]
+
+
+def _tunnel_running() -> bool:
+    exe = shutil.which("pgrep")
+    if not exe:
+        return False
+    try:
+        return subprocess.run([exe, "-f", "cloudflared.* tunnel"], capture_output=True, timeout=3).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def status(force: bool = False) -> dict:
     """État de l'accès à distance (mis en cache 30 s : lance `tailscale`, qui peut être lent)."""
     with _lock:
@@ -105,6 +136,11 @@ def status(force: bool = False) -> dict:
                  "password": _protected()}
     else:
         value = parse(_json(["status", "--json"]), _json(["serve", "status", "--json"]))
+    value["provider"] = "tailscale" if value["installed"] else None
+    if value["mode"] not in ("public", "private"):
+        url = tunnel_url()  # (sans Tailscale : tunnel Cloudflare)
+        if url:
+            value.update(installed=True, running=True, mode="public", url=url, provider="cloudflare")
     value["warning"] = None
     if value["mode"] == "public" and not _protected():
         value["warning"] = "Onde est joignable par tout Internet sans mot de passe : ajoute-en un (Réglages)."
@@ -115,6 +151,11 @@ def status(force: bool = False) -> dict:
 
 def describe(st: dict) -> list[str]:
     """Lignes lisibles pour `./start.sh remote status`."""
+    if st.get("provider") == "cloudflare":
+        lines = [f"Accès à distance PUBLIC par tunnel Cloudflare (adresse changeante) : {st['url']}"]
+        if st.get("warning"):
+            lines.append("! " + st["warning"])
+        return lines
     if not st["installed"]:
         return ["Tailscale n'est pas installé.  →  ./start.sh remote"]
     if not st["running"]:

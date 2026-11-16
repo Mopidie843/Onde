@@ -374,6 +374,12 @@ certificat à l'adresse `https://nom-du-pi.ton-reseau.ts.net`.
 - **Public** (`./start.sh remote public`) : tout Internet peut atteindre la page de connexion, sans appli sur le téléphone. Un mot
   de passe `ONDE_PASSWORD` d'au moins 8 caractères est obligatoire ; après 8 essais ratés, l'adresse est bloquée 15 minutes.
 - Dans la console Tailscale (*DNS* → HTTPS, et *Access controls* pour Funnel), active les certificats HTTPS ; le script le rappelle.
+- **Sans Tailscale** (`./start.sh remote tunnel`) : un tunnel Cloudflare (`cloudflared`, téléchargé dans le dossier d'Onde, sans compte).
+  Onde ouvre une connexion **sortante** : aucun port à ouvrir sur la box, rien à installer sur le téléphone, adresse
+  `https://….trycloudflare.com` avec certificat valide. Mot de passe d'au moins 8 caractères obligatoire (comme le mode public) ;
+  après 8 essais ratés l'adresse du visiteur est bloquée 15 minutes. **L'adresse change à chaque redémarrage du tunnel** : `./start.sh remote status`
+  l'affiche, et l'appli Android la retient toute seule dès que tu t'y connectes depuis la maison. Cloudflare réserve ces tunnels
+  sans compte aux usages simples (pas de garantie de disponibilité). Non testé avec un vrai compte ni sur un vrai Pi.
 - `./start.sh remote off` retire le partage. Les Réglages d'Onde affichent l'adresse, et l'appli Android la retient toute seule.
 
 Non testé avec un vrai compte Tailscale ni sur un vrai Pi : le script et les pages ont été vérifiés avec un faux `tailscale`.

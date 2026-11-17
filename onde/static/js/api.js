@@ -64,12 +64,17 @@ const STORE_RE = /^\/api\/(home|info|genres(\/[^/]+)?|playlists(\/\d+)?|smart(\/
 let pageDb = null;
 function openPageDb() {
   return pageDb ||= new Promise((resolve) => {
+    // (sur certains navigateurs — iPhone, navigation privée — l'ouverture peut ne jamais répondre : après 2 s on s'en passe,
+    // sans jamais bloquer l'appli)
+    const giveUp = setTimeout(() => { pageDb = null; resolve(null); }, 2000);
+    const done = (db) => { clearTimeout(giveUp); resolve(db); };
     try {
       const r = indexedDB.open("onde-pages", 1);
       r.onupgradeneeded = () => r.result.createObjectStore("p");
-      r.onsuccess = () => resolve(r.result);
-      r.onerror = () => resolve(null);
-    } catch { resolve(null); }
+      r.onsuccess = () => done(r.result);
+      r.onerror = () => done(null);
+      r.onblocked = () => done(null);
+    } catch { done(null); }
   });
 }
 const idb = (req) => new Promise((resolve) => { req.onsuccess = () => resolve(req.result); req.onerror = () => resolve(undefined); });

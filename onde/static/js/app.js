@@ -854,7 +854,7 @@ document.addEventListener("keydown", (e) => {
   await offline.init().catch(() => { offline.supported = false; });
   const reachable = offline.ready ? await offline.probe(true) : true;
   if (reachable) {
-    try { info = await api.get("/api/info"); setMe(info); await bindPageOwner(info.me?.id); } catch { info = null; }
+    try { info = await api.get("/api/info"); setMe(info); bindPageOwner(info.me?.id).catch(() => {}); } catch { info = null; }
     if (info?.me?.role === "admin") startAskBadge();
     ensureTerms(info);
     if (info) showWhatsNew(info);

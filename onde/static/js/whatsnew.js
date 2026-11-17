@@ -3,6 +3,9 @@ import { esc, icon, storage } from "./util.js";
 import { openModal } from "./ui.js";
 
 const NEWS = {
+  "1.3.8": [
+    ["refresh", "Page blanche corrigée", "Sur iPhone, l'accueil pouvait rester vide au démarrage : la copie des pages sur l'appareil ne bloque plus jamais l'appli."],
+  ],
   "1.3.7": [
     ["download-circle", "Pages sans réseau", "Accueil, bibliothèque, playlists et albums récents sont gardés sur l'appareil : sans Wi-Fi, tu retrouves les dernières pages vues (la musique, elle, vient de tes téléchargements).", ],
     ["play", "Lecteur plus fiable", "Un fichier absent ou une session expirée ne bloquent plus tout un format ; fondu, minuterie et barre de progression corrigés."],

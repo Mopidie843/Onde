@@ -4,6 +4,7 @@ import { openModal } from "./ui.js";
 
 const NEWS = {
   "1.3.8": [
+    ["speaker", "Raspberry éteint : plus d'écran noir", "Si le Pi est éteint, l'appli s'ouvre quand même, avec ta musique téléchargée et les dernières pages vues, et revient toute seule quand le Pi répond.", ],
     ["refresh", "Page blanche corrigée", "Sur iPhone, l'accueil pouvait rester vide au démarrage : la copie des pages sur l'appareil ne bloque plus jamais l'appli."],
   ],
   "1.3.7": [

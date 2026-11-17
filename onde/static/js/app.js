@@ -1,6 +1,6 @@
 // Onde — point d'entrée : routeur, lecteur, barre latérale, raccourcis.
 import { dev } from "./devhooks.js"; // en premier : la console (F7) note tout dès le chargement
-import { api, bus, trackCache, contextTracks, toggleLike, bindPageOwner } from "./api.js";
+import { api, bus, trackCache, contextTracks, toggleLike, bindPageOwner, hasCachedPages } from "./api.js";
 import { $, $$, esc, enc, icon, fmtTime, cover, likedCover, isMobile, storage } from "./util.js";
 import { setMe, ensureTerms } from "./profiles.js";
 import { bindResume, offerResume } from "./resume.js";
@@ -851,6 +851,7 @@ document.addEventListener("keydown", (e) => {
 
 // ======================================================================== démarrage
 (async function start() {
+  view.innerHTML = `<div class="spinner" aria-label="Chargement"></div>`;  // (jamais d'écran noir pendant la connexion)
   await offline.init().catch(() => { offline.supported = false; });
   const reachable = offline.ready ? await offline.probe(true) : true;
   if (reachable) {
@@ -859,7 +860,9 @@ document.addEventListener("keydown", (e) => {
     ensureTerms(info);
     if (info) showWhatsNew(info);
   }
-  if (!info && !offline.hasDownloads) {
+  // serveur éteint : de la musique téléchargée OU des pages gardées suffisent pour ouvrir l'appli en mode hors connexion
+  const keptPages = !info && !offline.hasDownloads ? await hasCachedPages().catch(() => false) : false;
+  if (!info && !offline.hasDownloads && !keptPages) {
     view.innerHTML = `<div class="page">${emptyState("speaker", "Serveur injoignable", "Vérifie que le Raspberry Pi est allumé et que tu es sur le même Wi-Fi. Onde se reconnecte tout seul dès qu'il répond.", `<button class="btn white" onclick="location.reload()">Réessayer</button>`)}</div>`;
     offline.addEventListener("status", () => { if (!offline.active) location.reload(); });
     return;

@@ -111,6 +111,10 @@ export async function bindPageOwner(uid) {
     await idb(store().put(uid, "__owner"));
   } catch { /* ignore */ }
 }
+/** Des pages sont-elles gardées sur l'appareil (accueil, playlists…) ? Alors l'appli reste utilisable sans le serveur. */
+export async function hasCachedPages() {
+  return (await pageRead("/api/home")) !== undefined || (await pageRead("/api/playlists")) !== undefined;
+}
 export async function forgetPages() {
   pageCache.clear();
   const db = await openPageDb();

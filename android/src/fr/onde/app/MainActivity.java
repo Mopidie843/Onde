@@ -78,6 +78,9 @@ public class MainActivity extends Activity {
     private String pendingLink;            // page à ouvrir (depuis une notification), ex. « #/album/3 »
     private boolean errorShown;
     private boolean failoverTried;
+    // Pi éteint : l'appli (pages, scripts) revient du cache du WebView au lieu d'un écran noir ; elle démarre alors en
+    // mode « hors connexion » (musique téléchargée, dernières pages vues).
+    private boolean cacheTried, cachedMode;
     private boolean loadFailed;            // le chargement en cours de la page a échoué
     private int loadRetries;
     private int pickGen;
@@ -159,6 +162,15 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         Updater.onResume(this);
+        if (cachedMode && web != null && setupView == null && server != null) {  // page du cache : le Pi est-il revenu ?
+            final String target = server;
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    if (Net.probe(target, 1500, 2500) == null) return;
+                    runOnUiThread(new Runnable() { @Override public void run() { if (cachedMode && web != null) { cacheTried = false; loadServer(); } } });
+                }
+            }).start();
+        }
     }
 
     @Override protected void onPause() {
@@ -270,6 +282,8 @@ public class MainActivity extends Activity {
         prefs.edit().putString(Prefs.ACTIVE, server).apply();
         String url = server;
         if (pendingLink != null) { url = server + "/" + pendingLink; pendingLink = null; }
+        cachedMode = false;
+        web.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
         web.loadUrl(url);
         Updater.maybeCheck(this, server);  // nouvelle version de l'appli sur le serveur ?
     }
@@ -343,6 +357,15 @@ public class MainActivity extends Activity {
 
     private void showError() {
         if (errorShown || web == null) return;
+        // Serveur injoignable alors que l'appli a déjà été chargée une fois : on la relit du cache (au lieu d'attendre
+        // puis d'afficher un écran vide). Sans copie en cache, le chargement échoue encore et l'écran d'erreur suit.
+        if (!cacheTried && server != null && prefs.getBoolean("shell_cached", false)) {
+            cacheTried = true;
+            cachedMode = true;
+            web.getSettings().setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+            web.loadUrl(server);
+            return;
+        }
         if (loadRetries < SILENT_RETRIES) {
             // réseau faible (4G qui capte mal…) : écran d'attente discret et nouvel essai, plutôt qu'une
             // page d'erreur tout de suite
@@ -402,7 +425,10 @@ public class MainActivity extends Activity {
 
         @Override public void onPageFinished(WebView v, String url) {
             // page d'Onde vraiment chargée : les compteurs de nouvel essai repartent de zéro
-            if (url != null && server != null && url.startsWith(server) && !loadFailed) { failoverTried = false; loadRetries = 0; }
+            if (url != null && server != null && url.startsWith(server) && !loadFailed) {
+                failoverTried = false; loadRetries = 0;
+                if (!cachedMode) { cacheTried = false; prefs.edit().putBoolean("shell_cached", true).apply(); }
+            }
         }
 
         @Override public void onReceivedSslError(WebView v, SslErrorHandler h, SslError e) {

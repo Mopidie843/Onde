@@ -58,7 +58,59 @@ async function fetchRetry(method, path, init) {
 const PAGE_RE = /^\/api\/(home|info|genres(\/[^/]+)?|playlists(\/\d+)?|smart|albums(\/\d+)?|artists(\/[^/]+)?|liked|tracks|me\/quota)$/;
 const PAGE_WAIT = 1800;
 const pageCache = new Map();
-export function forgetPages() { pageCache.clear(); }
+// Copie DURABLE des pages (IndexedDB) : sans réseau, l'appli montre les dernières pages vues. Propre au profil
+// connecté (vidée à la déconnexion). La liste complète des titres n'est pas gardée (trop lourde).
+const STORE_RE = /^\/api\/(home|info|genres(\/[^/]+)?|playlists(\/\d+)?|smart(\/\d+)?|albums(\/\d+)?|artists(\/[^/]+)?|liked)$/;
+let pageDb = null;
+function openPageDb() {
+  return pageDb ||= new Promise((resolve) => {
+    try {
+      const r = indexedDB.open("onde-pages", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("p");
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+const idb = (req) => new Promise((resolve) => { req.onsuccess = () => resolve(req.result); req.onerror = () => resolve(undefined); });
+async function pageSave(path, data) {
+  if (!STORE_RE.test(path.split("?")[0])) return;
+  const db = await openPageDb();
+  if (db) try { await idb(db.transaction("p", "readwrite").objectStore("p").put(data, path)); } catch { /* ignore */ }
+}
+async function pageRead(path) {
+  const db = await openPageDb();
+  if (!db) return undefined;
+  try {
+    const store = () => db.transaction("p", "readonly").objectStore("p");
+    const bare = path.split("?")[0];
+    const sortOnly = !path.includes("?") || [...new URLSearchParams(path.split("?")[1]).keys()].every((k) => k === "sort");
+    let hit = await idb(store().get(path));
+    if (hit === undefined && sortOnly) {  // (même page, autre tri : mieux que rien)
+      const keys = await idb(store().getAllKeys());
+      const other = (keys || []).find((k) => k === bare || k.startsWith(`${bare}?sort=`));
+      if (other !== undefined) hit = await idb(store().get(other));
+    }
+    return hit;
+  } catch { return undefined; }
+}
+/** Les pages gardées sont celles d'UN profil : si un autre se connecte sur cet appareil, on repart de zéro. */
+export async function bindPageOwner(uid) {
+  if (uid == null) return;
+  const db = await openPageDb();
+  if (!db) return;
+  try {
+    const store = () => db.transaction("p", "readwrite").objectStore("p");
+    const owner = await idb(store().get("__owner"));
+    if (owner !== undefined && owner !== uid) { pageCache.clear(); await idb(store().clear()); }
+    await idb(store().put(uid, "__owner"));
+  } catch { /* ignore */ }
+}
+export async function forgetPages() {
+  pageCache.clear();
+  const db = await openPageDb();
+  if (db) try { await idb(db.transaction("p", "readwrite").objectStore("p").clear()); } catch { /* ignore */ }
+}
 const clone = (d) => { try { return structuredClone(d); } catch { return JSON.parse(JSON.stringify(d)); } };
 
 function req(method, path, body, headers) {
@@ -68,7 +120,7 @@ function req(method, path, body, headers) {
     if (method !== "GET" && !/\/(played|resume|sync|dev|jam|pi|asks|me\/quota-request)\b/.test(bare)) pageCache.clear();
     return reqNet(method, path, body, headers);
   }
-  const fresh = reqNet(method, path, body, headers).then((d) => { pageCache.set(path, clone(d)); return d; });
+  const fresh = reqNet(method, path, body, headers).then((d) => { pageCache.set(path, clone(d)); pageSave(path, d); return d; });
   const q = path.includes("?") ? new URLSearchParams(path.split("?")[1]) : null;
   const hit = pageCache.get(path) ?? (q && [...q.keys()].every((k) => k === "sort") ? pageCache.get(bare) : undefined);
   if (hit === undefined) return fresh;
@@ -80,6 +132,8 @@ async function reqNet(method, path, body, headers = {}) {
   if (hooks.isOffline()) {
     const data = await local(method, path);
     if (data !== undefined) return data;
+    const kept = method === "GET" ? await pageRead(path) : undefined;
+    if (kept !== undefined) { remember(kept); return kept; }
     throw new Error(OFFLINE_MSG);
   }
   const init = { method, headers: { ...headers } };
@@ -97,6 +151,8 @@ async function reqNet(method, path, body, headers = {}) {
     hooks.failure?.();
     const data = await local(method, path);
     if (data !== undefined) return data;
+    const kept = method === "GET" ? await pageRead(path) : undefined;
+    if (kept !== undefined) { remember(kept); return kept; }
     throw new Error("Serveur injoignable — vérifie que le Raspberry Pi est allumé.");
   }
   if (res.status === 401) {

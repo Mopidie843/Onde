@@ -364,6 +364,13 @@ illisible*) et n'est pas réessayé ; un échec passager est réessayé le lende
 sur Pi 5), `small` (1,9 Go), `medium` (4,8 Go). Sur un Pi 5 avec `base`, compte de l'ordre d'une à quelques
 minutes par morceau (estimation : pas encore mesuré sur un vrai Pi). La langue est devinée d'après les paroles (sinon à l'écoute), ou fixée dans les Réglages.
 
+## Pages sans réseau
+
+En arrière-plan (jamais sur un réseau lent ou économe), l'appli précharge l'accueil, la bibliothèque, les playlists et les
+albums récents, et les garde sur l'appareil (IndexedDB, propres au profil connecté ; vidées si un autre profil se connecte).
+Sans réseau, ces pages s'affichent avec les dernières données vues ; seule la **musique téléchargée** (Réglages → Musique sur
+cet appareil) se lit. La recherche et les pages jamais ouvertes demandent le serveur. Non testé sur un vrai téléphone.
+
 ## Accès à distance (4G, autre Wi-Fi)
 
 Onde n'a besoin ni d'ouvrir de port sur ta box ni de nom de domaine : il passe par [Tailscale](https://tailscale.com) (gratuit

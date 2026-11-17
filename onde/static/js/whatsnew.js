@@ -4,6 +4,7 @@ import { openModal } from "./ui.js";
 
 const NEWS = {
   "1.3.7": [
+    ["download-circle", "Pages sans réseau", "Accueil, bibliothèque, playlists et albums récents sont gardés sur l'appareil : sans Wi-Fi, tu retrouves les dernières pages vues (la musique, elle, vient de tes téléchargements).", ],
     ["play", "Lecteur plus fiable", "Un fichier absent ou une session expirée ne bloquent plus tout un format ; fondu, minuterie et barre de progression corrigés."],
     ["radio", "Radios et mixes", "« Radio de l'artiste », radios d'album et de playlist, et lecture d'un mix depuis le téléphone fonctionnent."],
     ["refresh", "Mises à jour plus sûres", "Le zip doit contenir la version annoncée et une empreinte vérifiée ; l'appli Android demande confirmation avant d'ajouter un serveur."],

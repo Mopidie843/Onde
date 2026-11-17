@@ -1,6 +1,6 @@
 // Onde — point d'entrée : routeur, lecteur, barre latérale, raccourcis.
 import { dev } from "./devhooks.js"; // en premier : la console (F7) note tout dès le chargement
-import { api, bus, trackCache, contextTracks, toggleLike } from "./api.js";
+import { api, bus, trackCache, contextTracks, toggleLike, bindPageOwner } from "./api.js";
 import { $, $$, esc, enc, icon, fmtTime, cover, likedCover, isMobile, storage } from "./util.js";
 import { setMe, ensureTerms } from "./profiles.js";
 import { bindResume, offerResume } from "./resume.js";
@@ -10,6 +10,7 @@ import { bindPlayerState, lists, artistLinks, playlistCover, emptyState, flushLi
 import { bindDialogs, openTrackMenu, createPlaylist, cardMenuItems } from "./dialogs.js";
 import { openMenu, closeMenu, toast, toastError, makeSortable, confirmDialog } from "./ui.js";
 import { offline, autoOffline } from "./offline.js";
+import { startPrefetch } from "./prefetch.js";
 import { bindDownloads, downloadsView, offlineNotice, hrefOf } from "./downloads.js";
 import { bindSmart, smartView, openSmartEditor, smartCover } from "./smart.js";
 import { bindViews, home, search, library, album, artist, playlist, liked, tracks, genre, importView } from "./views.js";
@@ -59,6 +60,16 @@ const routes = [
 ];
 // hors connexion : ce qui marche sans le Pi (les albums/playlists téléchargés se lisent depuis l'appareil)
 const OFFLINE_OK = { home: downloadsView, library: downloadsView, downloads: downloadsView, search: downloadsView, album, playlist, liked, smart: smartView };
+// Hors connexion : les vraies pages, avec les dernières données gardées sur l'appareil (api.js) ; sans copie
+// pour cette page, repli sur l'écran des téléchargements. La recherche a besoin du serveur.
+const OFFLINE_PAGES = new Set(["home", "library", "album", "artist", "playlist", "liked", "smart", "genre", "stats"]);
+function offlineRoute(name, routeFn) {
+  const fallback = OFFLINE_OK[name] || offlineNotice;
+  if (!OFFLINE_PAGES.has(name)) return fallback;
+  return async (el, params) => {
+    try { return await routeFn(el, params); } catch { el.replaceChildren(); return fallback(el, params); }
+  };
+}
 const navStack = [];
 const scrolls = new Map();
 let cleanup = null;
@@ -73,7 +84,7 @@ const router = {
     const hash = location.hash.replace(/^#/, "") || "/";
     const found = routes.find(([re]) => re.test(hash)) || routes[0];
     const [re, routeFn, name] = found;
-    const fn = offline.active ? (OFFLINE_OK[name] || offlineNotice) : routeFn;
+    const fn = offline.active ? offlineRoute(name, routeFn) : routeFn;
     const params = (hash.match(re) || []).slice(1).filter((x) => x !== undefined);
     const token = ++renderSeq;
     // navigation arrière ? on restaure le défilement
@@ -843,7 +854,7 @@ document.addEventListener("keydown", (e) => {
   await offline.init().catch(() => { offline.supported = false; });
   const reachable = offline.ready ? await offline.probe(true) : true;
   if (reachable) {
-    try { info = await api.get("/api/info"); setMe(info); } catch { info = null; }
+    try { info = await api.get("/api/info"); setMe(info); await bindPageOwner(info.me?.id); } catch { info = null; }
     if (info?.me?.role === "admin") startAskBadge();
     ensureTerms(info);
     if (info) showWhatsNew(info);
@@ -868,6 +879,7 @@ document.addEventListener("keydown", (e) => {
   bindJam(player);
   onJam(() => { if (!queuePanel.hidden) renderQueueInto(queuePanel); if (!np.hidden) renderQueueInto($("#np-queue"), true); });
   autoOffline.start();
+  startPrefetch();
   if (!offline.active) setTimeout(() => offerResume().catch(() => {}), 1200);
   if (!offline.active) { offline.syncAll(); offline.flushPlays(); offline.resume(); }
   // l'appli elle-même est gardée sur l'appareil (s'ouvre sans le Pi) : seulement en contexte sécurisé

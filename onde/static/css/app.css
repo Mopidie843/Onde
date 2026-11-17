@@ -1357,3 +1357,8 @@ body.role-listener .ask-cta { display: flex !important; }
 .meta-opt img { width: 44px; height: 44px; border-radius: 4px; object-fit: cover; background: var(--elev); flex: none; }
 .meta-opt .mo-t { display: grid; min-width: 0; font-size: 13px; }
 .meta-opt .mo-t small { color: var(--dim); }
+
+/* ---------- Changement de page : apparition douce (plus de « clignotement ») ---------- */
+.page-in { animation: page-in .16s ease-out; }
+@keyframes page-in { from { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }

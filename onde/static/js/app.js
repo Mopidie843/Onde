@@ -85,7 +85,6 @@ const router = {
     closeMenu();
     if (cleanup) { try { cleanup(); } catch { /* ignore */ } cleanup = null; }
     currentRoute = name;
-    document.body.classList.toggle("deep", !["home", "search", "library", "import", "stats", "downloads", "asks", "dashboard"].includes(name));
     setTopTitle(null);
     $$("[data-nav]").forEach((a) => a.classList.toggle("on", a.dataset.nav === name));
     let el = document.createElement("div");
@@ -112,7 +111,10 @@ const router = {
       if (offline.active) offlineNotice(el);
       else el.innerHTML = `<div class="page">${emptyState("close", "Oups…", esc(e.message), `<button class="btn white" onclick="location.reload()">Réessayer</button>`)}</div>`;
     }
+    // (barre du haut et contenu changent ENSEMBLE : avant, la barre bougeait pendant le chargement, puis la page sautait)
+    document.body.classList.toggle("deep", !["home", "search", "library", "import", "stats", "downloads", "asks", "dashboard"].includes(name));
     view.replaceChildren(el);
+    el.classList.add("page-in");
     lastRender.offline = offline.active;
     lastRender.failed = failed;
     flushLists(el);

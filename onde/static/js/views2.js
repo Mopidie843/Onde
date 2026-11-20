@@ -12,6 +12,37 @@ import { offline, autoOffline } from "./offline.js";
 import { appShellTip } from "./downloads.js";
 import { wrappedView } from "./wrapped.js";
 
+// ---------------------------------------------------------------- scrobbling (propre à chaque profil)
+function scrobbleHtml(st) {
+  if (st.enabled) {
+    return `<div class="sc-text"><h3>Connecté${st.user ? ` : ${esc(st.user)}` : ""}</h3><p>Tes écoutes (après 30 s) sont envoyées à ${esc(st.url.replace(/^https:\/\//, ""))}.${st.pending ? ` <span class="dim">${plural(st.pending, "écoute en attente", "écoutes en attente")}.</span>` : ""}</p></div>
+      <button class="btn ghost" data-lb-off>${icon("close")} Déconnecter</button>`;
+  }
+  return `<div class="sc-text"><h3>Garde l'historique de tes écoutes</h3><p>Envoie chaque écoute à <b>ListenBrainz</b> (gratuit) ou à un serveur compatible (Maloja, Koito…). Colle ton jeton : listenbrainz.org, puis Paramètres.</p></div>
+    <form class="form" id="lb-form" style="width:100%;display:grid;gap:8px" autocomplete="off">
+      <input class="field" name="token" placeholder="Jeton utilisateur" required minlength="8" autocomplete="off" spellcheck="false">
+      <details><summary class="dim" style="cursor:pointer">Autre serveur que ListenBrainz</summary>
+        <input class="field" name="url" placeholder="https://mon-serveur.exemple" style="margin-top:8px;width:100%"></details>
+      <div><button class="btn white" type="submit">Connecter</button></div></form>`;
+}
+function bindScrobble(el) {
+  const box = $("#lb-box", el);
+  if (!box) return;
+  const load = async () => { try { box.innerHTML = scrobbleHtml(await api.get("/api/me/scrobble")); } catch { box.innerHTML = `<div class="sc-text"><p class="dim">Indisponible hors connexion.</p></div>`; } };
+  load();
+  box.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try { await api.put("/api/me/scrobble", { token: f.get("token"), url: f.get("url") || "" }); toast("Scrobbling activé"); } catch (err) { toastError(err); }
+    load();
+  });
+  box.addEventListener("click", async (e) => {
+    if (!e.target.closest("[data-lb-off]")) return;
+    try { await api.del("/api/me/scrobble"); toast("Scrobbling désactivé"); } catch (err) { toastError(err); }
+    load();
+  });
+}
+
 function deviceSection() {
   if (!offline.supported) return "";
   const n = offline.urls.size;
@@ -353,6 +384,9 @@ export async function settingsView(el) {
 
     ${soundSection(page.player)}
 
+    <h2 class="set-title">Scrobbling ListenBrainz</h2>
+    <div class="settings-card" id="lb-box" style="flex-wrap:wrap"><div class="spinner" style="margin:8px"></div></div>
+
     <div class="import-only">
     <h2 class="set-title">Artistes suivis</h2>
     <div class="settings-card" style="flex-wrap:wrap"><div class="sc-text" style="flex-basis:100%"><h3>Nouveautés automatiques</h3>
@@ -524,6 +558,7 @@ export async function settingsView(el) {
   const offAlign = bindAlign(el);
   bindProfiles(el, () => page.refresh());
   bindSound(el, page.player);
+  bindScrobble(el);
   const updLoad = () => api.get("/api/update").then((u) => {
     const src = $("#upd-src", el); if (src && document.activeElement !== src) src.value = u.source || "";
     const auto = $("#upd-auto", el); if (auto) auto.checked = !!u.auto;

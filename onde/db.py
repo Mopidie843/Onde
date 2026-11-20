@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS plays(
 );
 CREATE INDEX IF NOT EXISTS ix_plays_time ON plays(played_at);
 CREATE INDEX IF NOT EXISTS ix_plays_track ON plays(track_id);
+CREATE TABLE IF NOT EXISTS user_prefs(
+    user_id INT NOT NULL,
+    k TEXT NOT NULL,
+    v TEXT NOT NULL,
+    PRIMARY KEY(user_id, k)
+);
+CREATE TABLE IF NOT EXISTS scrobble_queue(
+    id INTEGER PRIMARY KEY,
+    user_id INT NOT NULL,
+    listened_at INT NOT NULL,
+    payload TEXT NOT NULL,
+    tries INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_scrobble_user ON scrobble_queue(user_id, listened_at);
 CREATE TABLE IF NOT EXISTS user_track_stats(
     user_id INT NOT NULL,
     track_id INT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,

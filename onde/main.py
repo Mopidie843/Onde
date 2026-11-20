@@ -28,7 +28,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import StaticFiles
 
 from . import api_models as M
-from . import asks, autoupdate, dashboard, quota, share, terms
+from . import asks, autoupdate, dashboard, quota, scrobble, share, terms
 from . import align, backup, clean, jam, updater, first_run, follow, users, config, covers, db, devlog, discover, library, lyrics, net, netinfo, notify, remote, restart, settings, stats, tls, transcode, tidy
 from . import gateway
 from .pi_player import player
@@ -39,7 +39,7 @@ from .routes_playlists import _add_to_playlist
 from .routes_playlists import router as playlists_router
 from .routes_sync import router as sync_router
 from .web import (STREAMS_CLOSING, J, _404, _cover_from_request, _disposition, _flag, _int, _ints, _num, _playlist,
-                  _read_limited, _reindex, _stats, _text, _track_row, shared)
+                  _check_public_url, _read_limited, _reindex, _stats, _text, _track_row, shared)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("onde")
@@ -1948,6 +1948,34 @@ def me_edit(body: dict = Body(...)):
         raise HTTPException(400, str(exc))
     users.log_activity("user", "profil modifié")
     return out
+
+
+@app.get("/api/me/scrobble")
+def scrobble_state():
+    return scrobble.status(users.uid())
+
+
+@app.put("/api/me/scrobble")
+def scrobble_save(body: dict = Body(...)):
+    """Jeton ListenBrainz du profil. Une adresse de serveur personnalisée ne doit pas mener au réseau local
+    (sauf pour l'administrateur) : sinon un ami ferait sonder la maison par le serveur."""
+    token, url = _text(body.get("token"), 200, "jeton attendu"), _text(body.get("url"), 300, "adresse attendue")
+    custom = scrobble.clean_url(url) if url else None
+    if custom and not users.is_admin():
+        try:
+            _check_public_url(custom)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    try:
+        return scrobble.save(users.uid(), token, custom)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/me/scrobble")
+def scrobble_forget():
+    scrobble.forget(users.uid())
+    return {"ok": True}
 
 
 @app.get("/api/users")

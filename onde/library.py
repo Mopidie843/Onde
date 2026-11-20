@@ -850,6 +850,8 @@ def record_play(track_id: int, source: str = "web", at: float | None = None) -> 
         db.x("""INSERT INTO user_track_stats(user_id, track_id, plays, last_played) VALUES(onde_uid(), ?, 1, ?)
                 ON CONFLICT(user_id, track_id) DO UPDATE SET plays = plays + 1,
                     last_played = MAX(COALESCE(last_played, 0), excluded.last_played)""", track_id, when)
+    from . import scrobble  # (import ici : scrobble utilise library.bg)
+    scrobble.on_play(db.current_uid.get(), track_id, when)
 
 
 # --------------------------------------------------------------------------- #

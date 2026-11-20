@@ -313,6 +313,8 @@ def delete(user_id: int) -> None:
         db.x("INSERT OR REPLACE INTO meta(k, v) VALUES('users:max_id', ?)", str(_next_id() - 1))
         db.x("DELETE FROM likes WHERE user_id=?", user_id)
         db.x("DELETE FROM user_track_stats WHERE user_id=?", user_id)
+        db.x("DELETE FROM user_prefs WHERE user_id=?", user_id)
+        db.x("DELETE FROM scrobble_queue WHERE user_id=?", user_id)
         db.x("DELETE FROM playlists WHERE owner_id=?", user_id)
         db.x("DELETE FROM smart_playlists WHERE owner_id=?", user_id)
         db.x("DELETE FROM shares WHERE owner_id=?", user_id)

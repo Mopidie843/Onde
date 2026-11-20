@@ -1,6 +1,6 @@
 // Onde — point d'entrée : routeur, lecteur, barre latérale, raccourcis.
 import { dev } from "./devhooks.js"; // en premier : la console (F7) note tout dès le chargement
-import { api, bus, trackCache, contextTracks, toggleLike, bindPageOwner, hasCachedPages } from "./api.js";
+import { api, bus, trackCache, contextTracks, toggleLike, bindPageOwner, hasCachedPages, keptPage } from "./api.js";
 import { $, $$, esc, enc, icon, fmtTime, cover, likedCover, isMobile, storage } from "./util.js";
 import { setMe, ensureTerms } from "./profiles.js";
 import { bindResume, offerResume } from "./resume.js";
@@ -853,7 +853,19 @@ document.addEventListener("keydown", (e) => {
 (async function start() {
   view.innerHTML = `<div class="spinner" aria-label="Chargement"></div>`;  // (jamais d'écran noir pendant la connexion)
   await offline.init().catch(() => { offline.supported = false; });
-  const reachable = offline.ready ? await offline.probe(true) : true;
+  const probing = offline.ready ? offline.probe(true) : Promise.resolve(true);
+  let reachable = await Promise.race([probing, new Promise((r) => setTimeout(() => r(null), 700))]);
+  if (reachable === null) {
+    // le serveur tarde à répondre (Pi éteint, Wi-Fi faible) : si on a de quoi afficher, on démarre TOUT DE SUITE avec
+    // ce qui est gardé sur l'appareil ; la suite du sondage ramène l'appli en ligne toute seule dès que le Pi répond
+    const kept = offline.hasDownloads || (await hasCachedPages().catch(() => false));
+    if (kept) {
+      info = (await keptPage("/api/info").catch(() => undefined)) || null;
+      if (info) setMe(info);
+      reachable = false;
+      offline.setActive(true);
+    } else reachable = await probing;
+  }
   if (reachable) {
     try { info = await api.get("/api/info"); setMe(info); bindPageOwner(info.me?.id).catch(() => {}); } catch { info = null; }
     if (info?.me?.role === "admin") startAskBadge();
@@ -872,7 +884,7 @@ document.addEventListener("keydown", (e) => {
   $("#offline-bar").hidden = !offline.active;
   renderVolume();
   await player.init();
-  if (info) player.connectPi(info.pi);
+  if (info && reachable !== false) player.connectPi(info.pi);
   renderTrack(); renderState(); renderTime(); renderSleep();
   if (storage.get("onde.queue", false) && !isMobile()) toggleQueue();
   renderSidebar();

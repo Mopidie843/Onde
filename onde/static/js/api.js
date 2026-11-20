@@ -111,6 +111,8 @@ export async function bindPageOwner(uid) {
     await idb(store().put(uid, "__owner"));
   } catch { /* ignore */ }
 }
+/** Dernière copie gardée d'une page (ou undefined) : sert au démarrage instantané quand le serveur tarde. */
+export const keptPage = (path) => pageRead(path);
 /** Des pages sont-elles gardées sur l'appareil (accueil, playlists…) ? Alors l'appli reste utilisable sans le serveur. */
 export async function hasCachedPages() {
   return (await pageRead("/api/home")) !== undefined || (await pageRead("/api/playlists")) !== undefined;

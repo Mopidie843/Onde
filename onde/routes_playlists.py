@@ -92,8 +92,9 @@ def _add_to_playlist(pid: int, ids: list[int], position: int | None = None) -> i
             start = min(max(0, position), _normalize_positions(pid))
             db.x("UPDATE playlist_tracks SET position = position + ? WHERE playlist_id=? AND position >= ?",
                  len(keep), pid, start)
-        rows = [(pid, tid, start + i, now) for i, tid in enumerate(keep)]
-        db.many("INSERT INTO playlist_tracks(playlist_id, track_id, position, added_at) VALUES(?,?,?,?)", rows)
+        me = db.current_uid.get()
+        rows = [(pid, tid, start + i, now, me) for i, tid in enumerate(keep)]
+        db.many("INSERT INTO playlist_tracks(playlist_id, track_id, position, added_at, added_by) VALUES(?,?,?,?,?)", rows)
         db.x("UPDATE playlists SET updated_at=? WHERE id=?", now, pid)
     return len(rows)
 
@@ -217,7 +218,9 @@ def reorder(pid: int, body: dict = Body(...)):
 
 @router.post("/api/playlists/{pid}/cover")
 async def playlist_cover(pid: int, request: Request):
-    await run_in_threadpool(_playlist, pid)
+    p = await run_in_threadpool(_playlist, pid)
+    if not p["mine"]:
+        raise HTTPException(403, "Seul le propriétaire peut changer l'image de cette playlist.")
     cid = await _cover_from_request(request)
     await run_in_threadpool(db.x, "UPDATE playlists SET cover_id=? WHERE id=?", cid, pid)
     return {"cover": cid, "color": M.color_of(cid)}
@@ -225,7 +228,8 @@ async def playlist_cover(pid: int, request: Request):
 
 @router.delete("/api/playlists/{pid}/cover")
 def playlist_cover_reset(pid: int):
-    _playlist(pid)
+    if not _playlist(pid)["mine"]:
+        raise HTTPException(403, "Seul le propriétaire peut changer l'image de cette playlist.")
     db.x("UPDATE playlists SET cover_id=NULL WHERE id=?", pid)
     return _playlist(pid)
 

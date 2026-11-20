@@ -267,6 +267,26 @@ export async function album(el, [id]) {
   });
 }
 
+// ---------------------------------------------------------------- playlist partagée entre profils
+async function shareWithProfiles(p) {
+  let people;
+  try { people = await api.get("/api/people"); } catch (e) { toastError(e); return; }
+  if (!people.length) { toast("Il n'y a pas d'autre profil : invite quelqu'un depuis Réglages → Profils."); return; }
+  const on = new Set(p.members.map((m) => m.id));
+  openModal({
+    title: "Partager « " + p.name + " »",
+    body: `<p class="muted" style="margin:0 0 12px">Les profils cochés voient cette playlist, y ajoutent, retirent et réordonnent des titres. Toi seul peux la renommer, la partager ou la supprimer.</p>
+      <div class="form" id="share-people">${people.map((u) => `<label style="display:flex;gap:10px;align-items:center"><input type="checkbox" value="${u.id}"${on.has(u.id) ? " checked" : ""}> ${esc(u.name)}</label>`).join("")}</div>`,
+    foot: `<button class="btn ghost" data-close>Annuler</button><button class="btn white" data-save>Enregistrer</button>`,
+    onMount: (m, close) => {
+      $("[data-save]", m).addEventListener("click", async () => {
+        const ids = $$("#share-people input:checked", m).map((i) => +i.value);
+        try { await api.put(`/api/playlists/${p.id}/members`, { userIds: ids }); close(); toast(ids.length ? "Playlist partagée" : "Partage retiré"); page.refresh(); } catch (e) { toastError(e); }
+      });
+    },
+  });
+}
+
 // ---------------------------------------------------------------- artiste
 export async function artist(el, [raw]) {
   const name = decodeURIComponent(raw);
@@ -348,9 +368,10 @@ export async function playlist(el, [id]) {
   page.setTopTitle(p.name, key);
   el.innerHTML = `
     ${hero({
-      kind: "Playlist", title: p.name, desc: p.description, editable: true, titleAct: "edit-pl",
+      kind: "Playlist", title: p.name, desc: p.description, editable: p.mine, titleAct: p.mine ? "edit-pl" : "",
       coverHtml: playlistCover(p, 384),
-      meta: `<span>${plural(p.count, "titre", "titres")}</span>${p.dur ? `<span class="sep"></span><span class="muted">${fmtLong(p.dur)}</span>` : ""}`,
+      meta: `<span>${plural(p.count, "titre", "titres")}</span>${p.dur ? `<span class="sep"></span><span class="muted">${fmtLong(p.dur)}</span>` : ""}${
+        p.mine && !p.members.length ? "" : `<span class="sep"></span><span class="muted">${p.mine ? `Avec ${p.members.map((m) => esc(m.name)).join(", ")}` : `De ${esc(p.ownerName)}`}</span>`}`,
     })}
     <div class="body">
       ${actionBar(key, `
@@ -399,14 +420,19 @@ export async function playlist(el, [id]) {
     if (act === "more") {
       openMenu([
         { icon: "queue", label: "Ajouter à la file d'attente", disabled: !p.count, onClick: () => { page.player.addToQueue(p.tracks.map((t) => t.id)); toast("Ajouté à la file d'attente"); } },
-        { icon: "edit", label: "Modifier les infos", onClick: () => editPlaylist(p) },
-        { icon: "image", label: "Changer l'image", onClick: openCover },
+        ...(p.mine ? [
+          { icon: "edit", label: "Modifier les infos", onClick: () => editPlaylist(p) },
+          { icon: "image", label: "Changer l'image", onClick: openCover },
+          { icon: "user", label: p.members.length ? "Partagée avec des profils…" : "Partager avec des profils…", onClick: () => shareWithProfiles(p) },
+        ] : []),
         { icon: "download", label: "Exporter en .zip", disabled: !p.count, onClick: () => download(`/api/playlists/${p.id}/download`) },
         { icon: "list", label: "Exporter (.m3u8)", disabled: !p.count, onClick: () => download(`/api/playlists/${p.id}/export`) },
         { icon: "radio", label: "Radio de la playlist", disabled: !p.count, onClick: () => page.playKey(`radio:tracks:${p.tracks.slice(0, 20).map((t) => t.id).join(",")}`) },
-        { icon: "link", label: "Partager (lien d'écoute)", onClick: () => shareDialog(p) },
-        "hr",
-        { icon: "trash", label: "Supprimer la playlist", danger: true, onClick: () => deletePlaylist(p) },
+        ...(p.mine ? [
+          { icon: "link", label: "Partager (lien d'écoute)", onClick: () => shareDialog(p) },
+          "hr",
+          { icon: "trash", label: "Supprimer la playlist", danger: true, onClick: () => deletePlaylist(p) },
+        ] : []),
       ], { anchor: btn });
     }
     const add = e.target.closest("[data-add]");

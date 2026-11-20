@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS plays(
 );
 CREATE INDEX IF NOT EXISTS ix_plays_time ON plays(played_at);
 CREATE INDEX IF NOT EXISTS ix_plays_track ON plays(track_id);
+CREATE TABLE IF NOT EXISTS playlist_members(
+    playlist_id INT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    user_id INT NOT NULL,
+    added_at REAL,
+    PRIMARY KEY(playlist_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS ix_pm_user ON playlist_members(user_id);
 CREATE TABLE IF NOT EXISTS user_prefs(
     user_id INT NOT NULL,
     k TEXT NOT NULL,
@@ -230,6 +237,7 @@ MIGRATIONS = [
     ("lyrics", "align_tries", "INT NOT NULL DEFAULT 0"),
     ("lyrics", "align_next", "REAL"),
     ("lyrics", "align_error", "TEXT"),
+    ("playlist_tracks", "added_by", "INT"),                   # qui a ajouté ce titre (playlists partagées)
     ("playlists", "owner_id", "INT NOT NULL DEFAULT 1"),      # profil propriétaire
     ("smart_playlists", "owner_id", "INT NOT NULL DEFAULT 1"),
     ("plays", "user_id", "INT NOT NULL DEFAULT 1"),           # qui a écouté

@@ -1354,9 +1354,46 @@ def get_playlist(pid: int):
     return J(p)
 
 
+def _owned_playlist(pid: int) -> dict:
+    """Playlist dont le profil connecté est le propriétaire (les profils invités peuvent seulement y ajouter,
+    retirer et réordonner des titres)."""
+    p = _playlist(pid)
+    if not p["mine"]:
+        raise HTTPException(403, "Seul le propriétaire peut modifier, partager ou supprimer cette playlist.")
+    return p
+
+
+@app.get("/api/people")
+def people():
+    """Les autres profils (pseudo seulement) : pour partager une playlist."""
+    me = users.uid()
+    return [{"id": u["id"], "name": u["name"]} for u in db.q("SELECT id, name FROM users ORDER BY name COLLATE NOCASE") if u["id"] != me]
+
+
+@app.get("/api/playlists/{pid}/members")
+def playlist_members(pid: int):
+    p = _playlist(pid)
+    return {"owner": {"id": p["ownerId"], "name": p["ownerName"]}, "members": p["members"], "mine": p["mine"]}
+
+
+@app.put("/api/playlists/{pid}/members")
+def playlist_set_members(pid: int, body: dict = Body(...)):
+    """Remplace la liste des profils avec qui la playlist est partagée (propriétaire seulement)."""
+    p = _owned_playlist(pid)
+    wanted = set(_ints(body.get("userIds", []), 100, "liste de profils attendue")) - {p["ownerId"]}
+    known = {u["id"] for u in db.q("SELECT id FROM users")}
+    now = time.time()
+    with db.tx():
+        db.x("DELETE FROM playlist_members WHERE playlist_id=?", pid)
+        db.many("INSERT INTO playlist_members(playlist_id, user_id, added_at) VALUES(?,?,?)",
+                [(pid, uid, now) for uid in sorted(wanted & known)])
+    users.log_activity("playlist", f"« {p['name']} » partagée avec {len(wanted & known)} profil(s)")
+    return _playlist(pid)
+
+
 @app.patch("/api/playlists/{pid}")
 def edit_playlist(pid: int, body: dict = Body(...)):
-    _playlist(pid)
+    _owned_playlist(pid)
     name = (_text(body["name"], 120) or "Sans titre") if "name" in body else None
     description = _text(body["description"], 500) if "description" in body else None
     if name is not None:
@@ -1369,7 +1406,7 @@ def edit_playlist(pid: int, body: dict = Body(...)):
 
 @app.delete("/api/playlists/{pid}")
 def delete_playlist(pid: int):
-    _playlist(pid)  # (seulement ses propres playlists)
+    _owned_playlist(pid)  # (seulement ses propres playlists)
     db.x("DELETE FROM playlists WHERE id=? AND owner_id=onde_uid()", pid)
     return {"ok": True}
 

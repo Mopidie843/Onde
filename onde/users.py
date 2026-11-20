@@ -314,6 +314,7 @@ def delete(user_id: int) -> None:
         db.x("DELETE FROM likes WHERE user_id=?", user_id)
         db.x("DELETE FROM user_track_stats WHERE user_id=?", user_id)
         db.x("DELETE FROM user_prefs WHERE user_id=?", user_id)
+        db.x("DELETE FROM playlist_members WHERE user_id=?", user_id)
         db.x("DELETE FROM scrobble_queue WHERE user_id=?", user_id)
         db.x("DELETE FROM playlists WHERE owner_id=?", user_id)
         db.x("DELETE FROM smart_playlists WHERE owner_id=?", user_id)

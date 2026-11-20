@@ -163,7 +163,7 @@ export function playlistCard(p) {
   return `<div class="card">
     <div class="cv">${playlistCover(p, 384)}${fab(`playlist:${p.id}`)}</div>
     <a class="card-link" href="#/playlist/${p.id}"><div class="c1 ell">${esc(p.name)}</div></a>
-    <div class="c2">${p.description ? esc(p.description) : `${p.count} titre${p.count > 1 ? "s" : ""}`}</div>
+    <div class="c2">${p.mine === false ? `De ${esc(p.ownerName)}` : p.members && p.members.length ? "Partagée" : p.description ? esc(p.description) : `${p.count} titre${p.count > 1 ? "s" : ""}`}</div>
   </div>`;
 }
 export function mixCard(m) {

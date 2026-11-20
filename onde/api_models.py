@@ -197,14 +197,16 @@ def color_of(cover_id: str | None) -> str | None:
 # ------------------------------------------------------------------ playlists
 def playlist_summary(pid: int | None = None) -> list[dict]:
     sql = """
-    SELECT p.id, p.name, p.description, p.cover_id, p.created_at, p.updated_at,
+    SELECT p.id, p.name, p.description, p.cover_id, p.created_at, p.updated_at, p.owner_id,
            COUNT(pt.id) AS count, COALESCE(SUM(t.duration), 0) AS dur
     FROM playlists p
     LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
     LEFT JOIN tracks t ON t.id = pt.track_id
     """
     args = ()
-    sql += " WHERE p.owner_id = onde_uid()"  # chaque profil a ses playlists
+    # chaque profil a ses playlists, plus celles que d'autres profils ont partagées avec lui
+    sql += """ WHERE (p.owner_id = onde_uid()
+                  OR EXISTS (SELECT 1 FROM playlist_members m WHERE m.playlist_id = p.id AND m.user_id = onde_uid()))"""
     if pid is not None:
         sql += " AND p.id=?"
         args = (pid,)
@@ -217,7 +219,12 @@ def playlist_summary(pid: int | None = None) -> list[dict]:
                WHERE pt.playlist_id=? AND COALESCE(t.cover_id, a.cover_id) IS NOT NULL
                GROUP BY cover ORDER BY pos LIMIT 4""", r["id"])]
         color = color_of(r["cover_id"] or (mosaic[0] if mosaic else None))
+        people = db.q("""SELECT u.id, u.name FROM playlist_members m JOIN users u ON u.id = m.user_id
+                         WHERE m.playlist_id=? ORDER BY u.name COLLATE NOCASE""", r["id"])
+        owner = db.q1("SELECT name FROM users WHERE id=?", r["owner_id"])
         out.append({
+            "mine": r["owner_id"] == db.current_uid.get(), "ownerId": r["owner_id"],
+            "ownerName": owner["name"] if owner else "", "members": [{"id": u["id"], "name": u["name"]} for u in people],
             "id": r["id"], "name": r["name"], "description": r["description"],
             "cover": r["cover_id"], "mosaic": mosaic, "color": color,
             "count": r["count"], "dur": round(r["dur"] or 0),
@@ -227,12 +234,16 @@ def playlist_summary(pid: int | None = None) -> list[dict]:
 
 
 def playlist_tracks(pid: int) -> list[dict]:
-    rows = db.q(TRACK_SELECT.replace("FROM tracks t", ", pt.id AS entry, pt.added_at AS padded FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id")
+    rows = db.q(TRACK_SELECT.replace("FROM tracks t", ", pt.id AS entry, pt.added_at AS padded, pt.added_by AS pby FROM playlist_tracks pt JOIN tracks t ON t.id = pt.track_id")
                 + " WHERE pt.playlist_id=? ORDER BY pt.position", pid)
+    names = {u["id"]: u["name"] for u in db.q("SELECT id, name FROM users")}
+    shared = bool(db.q1("SELECT 1 FROM playlist_members WHERE playlist_id=?", pid))
     out = []
     for r in rows:
         t = track(r)
         t["entry"] = r["entry"]
         t["padded"] = r["padded"]
+        if shared and r["pby"] in names:  # playlist partagée : qui a ajouté ce titre
+            t["addedBy"] = names[r["pby"]]
         out.append(t)
     return out

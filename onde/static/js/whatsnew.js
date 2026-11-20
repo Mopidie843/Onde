@@ -3,6 +3,12 @@ import { esc, icon, storage } from "./util.js";
 import { openModal } from "./ui.js";
 
 const NEWS = {
+  "1.3.9": [
+    ["user", "Playlists partagées", "Partage une playlist avec d'autres profils : ils y ajoutent, retirent et réordonnent des titres, tu gardes la main sur le reste."],
+    ["chart", "Écoutes propres à chaque profil", "L'accueil, les mixes et les playlists intelligentes ne tiennent plus compte de ce qu'écoutent les autres profils."],
+    ["radio", "Scrobbling ListenBrainz", "Envoie tes écoutes à ListenBrainz (ou un serveur compatible) : Réglages → Scrobbling."],
+    ["shuffle", "Aléatoire équilibré et filtre de liste", "Plus deux fois le même artiste d'affilée ; filtre dans les playlists et les titres likés ; pochettes en fondu ; démarrage instantané même si le Pi tarde."],
+  ],
   "1.3.8": [
     ["speaker", "Raspberry éteint : plus d'écran noir", "Si le Pi est éteint, l'appli s'ouvre quand même, avec ta musique téléchargée et les dernières pages vues, et revient toute seule quand le Pi répond.", ],
     ["refresh", "Page blanche corrigée", "Sur iPhone, l'accueil pouvait rester vide au démarrage : la copie des pages sur l'appareil ne bloque plus jamais l'appli."],

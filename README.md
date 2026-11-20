@@ -364,12 +364,30 @@ illisible*) et n'est pas réessayé ; un échec passager est réessayé le lende
 sur Pi 5), `small` (1,9 Go), `medium` (4,8 Go). Sur un Pi 5 avec `base`, compte de l'ordre d'une à quelques
 minutes par morceau (estimation : pas encore mesuré sur un vrai Pi). La langue est devinée d'après les paroles (sinon à l'écoute), ou fixée dans les Réglages.
 
+## Playlists partagées, écoutes par profil, scrobbling
+
+- **Playlists partagées** : dans le menu d'une playlist, « Partager avec des profils… ». Les profils cochés la voient, y ajoutent, retirent
+  et réordonnent des titres (le titre indique qui l'a ajouté) ; seul le propriétaire la renomme, la partage ou la supprime.
+- **Écoutes par profil** : l'accueil, « Tes classiques », les albums et artistes les plus écoutés et les règles « Mes écoutes » des playlists
+  intelligentes ne comptent que tes écoutes. `popularity` (sur chaque titre) reste le total de la maison. Sur l'enceinte (Pi), l'écoute
+  est comptée pour le profil qui a lancé la file, après 30 s.
+- **Scrobbling** (Réglages) : colle ton jeton ListenBrainz (listenbrainz.org → Paramètres) ou celui d'un serveur compatible ; chaque
+  écoute (30 s) est envoyée en arrière-plan, mise en attente si le serveur ne répond pas (3 essais). Un jeton par profil.
+- **Aléatoire équilibré** : plus deux fois le même artiste d'affilée quand c'est possible. **Filtre** dans les playlists et les titres likés.
+
 ## Pages sans réseau
 
 En arrière-plan (jamais sur un réseau lent ou économe), l'appli précharge l'accueil, la bibliothèque, les playlists et les
 albums récents, et les garde sur l'appareil (IndexedDB, propres au profil connecté ; vidées si un autre profil se connecte).
 Sans réseau, ces pages s'affichent avec les dernières données vues ; seule la **musique téléchargée** (Réglages → Musique sur
 cet appareil) se lit. La recherche et les pages jamais ouvertes demandent le serveur. Non testé sur un vrai téléphone.
+
+## APK : garde toujours la même clé de signature
+
+Android n'installe une mise à jour **que si l'APK est signé par la même clé** que celle déjà installée. `android/build.sh` crée la clé
+`android/build/onde.keystore` la première fois : **sauvegarde ce fichier** (il n'est pas dans le dépôt). Pour que le workflow GitHub « Onde.apk »
+signe avec ta clé : `base64 -w0 android/build/onde.keystore`, puis colle le résultat dans le secret `ONDE_KEYSTORE_B64` du dépôt
+(Settings → Secrets and variables → Actions). Sans ce secret, chaque build a sa propre clé et ne se met pas à jour par-dessus l'ancien.
 
 ## Accès à distance (4G, autre Wi-Fi)
 

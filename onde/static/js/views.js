@@ -168,7 +168,7 @@ export async function library(el, [tab = "playlists"]) {
       <a class="chip" href="#/tracks">Titres</a>
       ${offline.supported && offline.hasDownloads ? `<a class="chip" href="#/downloads">${icon("dl-done", "sm")} Téléchargés</a>` : ""}
       <span class="spacer"></span>
-      ${tab === "playlists" ? `<button class="chip" data-m3u-import title="Importer une playlist .m3u / .m3u8">${icon("upload", "sm")} Importer .m3u</button>` : ""}
+      ${tab === "playlists" ? `<button class="chip import-only" data-m3u-import title="Importer une playlist .m3u / .m3u8">${icon("upload", "sm")} Importer .m3u</button>` : ""}
       <label class="filter">${icon("search")}<input id="lib-filter" placeholder="Filtrer" autocomplete="off"></label>
       <select class="select" id="lib-sort">${LIB_SORTS[tab].map(([k, l]) => `<option value="${k}"${k === sort ? " selected" : ""}>${l}</option>`).join("")}</select>
     </div>
@@ -235,7 +235,7 @@ export async function album(el, [id]) {
   const query = a.single ? a.artist : `${a.artist} ${a.name}`;
   el.innerHTML = `
     ${hero({
-      kind, title: a.single ? `Singles` : a.name, editable: !a.single,
+      kind, title: a.single ? `Singles` : a.name, editable: !a.single && isAdmin(),  // (changer une pochette d'album : réservé à l'admin)
       coverHtml: cover(a.cover, 384, a.name, "disc", a.name),
       meta: `<a href="#/artist/${enc(a.artist)}">${esc(a.artist)}</a>${a.year ? `<span class="sep"></span><span>${a.year}</span>` : ""}<span class="sep"></span><span>${plural(a.count, "titre", "titres")}, <span class="muted">${fmtLong(a.dur)}</span></span>`,
     })}
@@ -280,7 +280,7 @@ export async function artist(el, [raw]) {
   const allIds = d.tracks.map((t) => t.id);
   el.innerHTML = `
     ${hero({
-      kind: "Artiste", title: d.name, round: true, editable: true,
+      kind: "Artiste", title: d.name, round: true, editable: isAdmin(),
       coverHtml: cover(d.cover, 384, d.name, "user", d.name),
       meta: `<span>${plural(d.count, "titre", "titres")}</span>${d.plays ? `<span class="sep"></span><span>${plural(d.plays, "écoute", "écoutes")}</span>` : ""}`,
     })}

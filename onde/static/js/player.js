@@ -513,7 +513,10 @@ export class Player extends EventTarget {
       this.queue = [...this.queue.slice(0, this.index + 1), ...upcoming];
     } else if (this.original) {
       this.queue = this.original;
-      this.index = Math.max(0, this.queue.indexOf(cur));
+      // (doublons : on retient l'occurrence la plus proche de la place d'avant, pas la première)
+      let best = -1;
+      this.queue.forEach((id, k) => { if (id === cur && (best < 0 || Math.abs(k - this.index) < Math.abs(best - this.index))) best = k; });
+      this.index = Math.max(0, best);
       this.original = null;
     }
     this.manualEnd = this.index;
@@ -594,10 +597,12 @@ export class Player extends EventTarget {
   }
   move(from, to) {
     if (from === to || from === this.index) return;
-    const cur = this.currentId;
     const [id] = this.queue.splice(from, 1);
     this.queue.splice(to, 0, id);
-    this.index = this.queue.indexOf(cur);
+    // (position du titre en cours recalculée sans le chercher par son id : avec un doublon, la lecture reculait)
+    let idx = from < this.index ? this.index - 1 : this.index;
+    if (to <= idx) idx++;
+    this.index = idx;
     this._queueChanged();
   }
   clearUpcoming() {

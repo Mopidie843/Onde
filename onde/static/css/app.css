@@ -1362,3 +1362,8 @@ body.role-listener .ask-cta { display: flex !important; }
 .page-in { animation: page-in .16s ease-out; }
 @keyframes page-in { from { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .page-in { animation: none; } }
+
+/* ---------- Pochettes : apparition en fondu une fois chargées ---------- */
+img.cover-img { transition: opacity .25s ease-out; }
+img.cover-img:not(.ld) { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { img.cover-img { transition: none; } }

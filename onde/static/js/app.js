@@ -38,6 +38,10 @@ const cast = { airplay: false, airplayOn: false, remote: false, remoteOn: false 
 
 bindPlayerState(() => player.currentId, () => player.paused);
 
+// Pochettes : elles apparaissent en fondu quand elles sont chargées (au lieu de sauter d'un coup)
+document.addEventListener("load", (e) => { if (e.target.tagName === "IMG") e.target.classList.add("ld"); }, true);
+document.addEventListener("error", (e) => { if (e.target.tagName === "IMG") e.target.classList.add("ld"); }, true);
+
 // ======================================================================== routeur
 const routes = [
   [/^\/?$/, home, "home"],
@@ -593,7 +597,9 @@ setInterval(() => { if (player.sleepLeft != null) renderSleep(); }, 1000);
 // ======================================================================== file d'attente
 function queueRow(id, qi, cur = false) {
   const t = trackCache.get(id);
-  if (!t) return "";
+  if (!t) {  // (titre pas encore connu, ex. hors connexion : une ligne quand même, sinon les positions du glisser-déposer se décalent)
+    return `<div class="row" data-qi="${qi}"><div class="c-title"><div class="tt"><div class="t1 dim">Titre non chargé</div></div></div>${cur ? "<div></div><div></div>" : `<button class="icon-btn c-rm" data-qrm="${qi}" aria-label="Retirer">${icon("close", "sm")}</button><div class="grip">${icon("grip", "sm")}</div>`}</div>`;
+  }
   return `<div class="row${cur ? " playing" : ""}" data-qi="${qi}">
     <div class="c-title"><div class="rc">${cover(t.cover, 96, t.album)}</div><div class="tt"><div class="t1">${esc(t.title)}</div><div class="t2">${artistLinks(t)}</div></div></div>
     ${cur ? "<div></div><div></div>" : `<button class="icon-btn c-rm" data-qrm="${qi}" aria-label="Retirer">${icon("close", "sm")}</button><div class="grip">${icon("grip", "sm")}</div>`}

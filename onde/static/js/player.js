@@ -17,6 +17,33 @@ import { api, trackCache, ensureTracks, emit as emitBus, OFFLINE_MSG } from "./a
 import { shuffleArr, storage, canPlayExt, markUnplayable, artworkUrl } from "./util.js";
 import { offline } from "./offline.js";
 
+/** Aléatoire « équilibré » : mélange, puis évite d'enchaîner deux titres du même artiste quand c'est possible. */
+const artistOf = (id) => (trackCache.get(id)?.artist || "").trim().toLowerCase();
+export function balancedShuffle(ids, previous = null) {
+  // un groupe par artiste (mélangé) ; à chaque pas on prend dans le groupe le plus fourni qui n'est pas l'artiste précédent :
+  // ainsi les gros artistes sont étalés sur toute la liste au lieu de s'empiler à la fin
+  const groups = new Map();
+  for (const id of shuffleArr(ids.slice())) {
+    const key = artistOf(id) || `?${id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(id);
+  }
+  const list = shuffleArr([...groups.entries()]);
+  const out = [];
+  let prev = previous == null ? "" : artistOf(previous);
+  for (let n = ids.length; n > 0; n--) {
+    let best = -1;
+    for (let g = 0; g < list.length; g++) {
+      if (!list[g][1].length || list[g][0] === prev) continue;
+      if (best < 0 || list[g][1].length > list[best][1].length) best = g;
+    }
+    if (best < 0) best = list.findIndex(([, v]) => v.length);  // (il ne reste que l'artiste précédent)
+    out.push(list[best][1].pop());
+    prev = list[best][0];
+  }
+  return out;
+}
+
 const KEY = "onde.player.v1";
 const TARGET_LUFS = -14;
 // Égaliseur (5 bandes) et préréglages
@@ -146,7 +173,7 @@ export class Player extends EventTarget {
     this.autoFrom = -1;
     if (this.shuffle) {
       const first = ids[start];
-      const rest = shuffleArr(ids.filter((_, i) => i !== start));
+      const rest = balancedShuffle(ids.filter((_, i) => i !== start), ids[start]);
       this.original = ids.slice();
       this.queue = [first, ...rest];
       this.index = 0;
@@ -509,7 +536,7 @@ export class Player extends EventTarget {
     const cur = this.currentId;
     if (this.shuffle) {
       this.original = this.queue.slice();
-      const upcoming = shuffleArr(this.queue.slice(this.index + 1));
+      const upcoming = balancedShuffle(this.queue.slice(this.index + 1), this.currentId);
       this.queue = [...this.queue.slice(0, this.index + 1), ...upcoming];
     } else if (this.original) {
       this.queue = this.original;

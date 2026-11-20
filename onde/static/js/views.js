@@ -5,7 +5,7 @@ import {
 } from "./util.js";
 import {
   trackList, albumCard, artistCard, playlistCard, likedCard, newPlaylistCard, shelf, grid, hero, actionBar, emptyState,
-  playlistCover, lists, flushLists, mixCard, mountGrid,
+  playlistCover, lists, flushLists, mixCard, mountGrid, filterBox, bindFilter,
 } from "./components.js";
 import { editAlbum, coverDialog, editPlaylist, deletePlaylist, download, playlistSubmenu, addToPlaylist, createPlaylist } from "./dialogs.js";
 import { openMenu, makeSortable, toast, toastError, openModal } from "./ui.js";
@@ -356,6 +356,7 @@ export async function playlist(el, [id]) {
       ${actionBar(key, `
         ${p.count && !offline.supported ? `<button class="icon-btn sm" data-act="dl" aria-label="Télécharger" title="Télécharger la playlist (.zip)">${icon("download-circle")}</button>` : ""}
         <button class="icon-btn sm" data-act="more" aria-label="Plus d'options">${icon("more")}</button>`)}
+      ${p.tracks.length > 8 ? filterBox() : ""}
       <div id="pl-tracks">${trackList(p.tracks, { ctx, added: true, sortable: true, playlistId: p.id })}</div>
       <section class="section" style="margin-top:32px">
         <div class="sec-head"><h2>${p.count ? "Ajouter des titres" : "Trouvons quelque chose pour ta playlist"}</h2></div>
@@ -363,6 +364,7 @@ export async function playlist(el, [id]) {
         <div id="pl-add-res"></div>
       </section>
     </div>`;
+  bindFilter(el, p.tracks);
   const tl = $("#pl-tracks .tl", el);
   if (tl) {
     makeSortable(tl, {
@@ -457,8 +459,10 @@ export async function liked(el) {
     ${hero({ kind: "Playlist", title: "Titres likés", coverHtml: likedCover(), meta: `<span>${plural(tracks.length, "titre", "titres")}</span>${dur ? `<span class="sep"></span><span class="muted">${fmtLong(dur)}</span>` : ""}` })}
     <div class="body">
       ${tracks.length ? actionBar("liked") : ""}
+      ${tracks.length > 8 ? filterBox() : ""}
       ${trackList(tracks, { ctx, added: false, empty: emptyState("heart", "Les titres que tu aimes s'affichent ici", "Clique sur le cœur à côté d'un titre pour l'ajouter.", `<a class="btn white" href="#/search">Trouver des titres</a>`) })}
     </div>`;
+  bindFilter(el, tracks);
 }
 
 // ---------------------------------------------------------------- tous les titres

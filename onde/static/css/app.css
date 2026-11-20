@@ -1367,3 +1367,6 @@ body.role-listener .ask-cta { display: flex !important; }
 img.cover-img { transition: opacity .25s ease-out; }
 img.cover-img:not(.ld) { opacity: 0; }
 @media (prefers-reduced-motion: reduce) { img.cover-img { transition: none; } }
+
+/* ---------- Filtre d'une liste de titres ---------- */
+.tl-filter { margin: 4px 0 12px; max-width: 360px; }

@@ -45,6 +45,22 @@ function row(t, i, o) {
 /**
  * options : ctx {key,label,href,kind}, album, added, cover, numbered, sortable, discs, head, allIds, playlistId
  */
+/** Champ « Filtrer cette liste » (playlists, titres likés…) : cache les lignes qui ne correspondent pas. */
+export const filterBox = () => `<label class="filter tl-filter">${icon("search")}<input class="tl-filter-input" placeholder="Filtrer cette liste" autocomplete="off" aria-label="Filtrer cette liste"></label>`;
+export function bindFilter(root, tracks) {
+  const input = root.querySelector(".tl-filter-input");
+  if (!input) return;
+  const text = new Map(tracks.map((t) => [t.id, `${t.title} ${t.artist} ${t.album || ""}`.toLowerCase()]));
+  const norm = (x) => x.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  input.addEventListener("input", () => {
+    const words = norm(input.value.toLowerCase()).split(/\s+/).filter(Boolean);
+    root.querySelectorAll(".row[data-tid]").forEach((row) => {
+      const hay = norm(text.get(+row.dataset.tid) || "");
+      row.style.display = words.every((w) => hay.includes(w)) ? "" : "none";
+    });
+  });
+}
+
 export function trackList(tracks, o = {}) {
   o = { album: true, added: false, cover: true, numbered: false, sortable: false, discs: false, head: true, ...o };
   if (!tracks.length) return o.empty || "";

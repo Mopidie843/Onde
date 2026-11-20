@@ -9,20 +9,23 @@ TRACK_SELECT = """
 SELECT t.id, t.title, t.artist, t.album_id, a.name AS album, a.artist AS album_artist,
        t.track_no, t.disc_no, COALESCE(t.year, a.year) AS year, t.genre, t.duration,
        COALESCE(t.cover_id, a.cover_id) AS cover, c.color, (l.track_id IS NOT NULL) AS liked,
-       t.plays, t.added_at, t.ext, t.bitrate, t.size, t.lufs
+       COALESCE(us.plays, 0) AS plays, us.last_played AS last_played, t.plays AS popularity,
+       t.added_at, t.ext, t.bitrate, t.size, t.lufs
 FROM tracks t
 JOIN albums a ON a.id = t.album_id
 LEFT JOIN covers c ON c.id = COALESCE(t.cover_id, a.cover_id)
 LEFT JOIN likes l ON l.track_id = t.id AND l.user_id = onde_uid()
+LEFT JOIN user_track_stats us ON us.track_id = t.id AND us.user_id = onde_uid()
 """
 
 ALBUM_SELECT = """
 SELECT a.id, a.name, a.artist, a.year, a.cover_id AS cover, c.color,
        COUNT(t.id) AS count, SUM(t.duration) AS dur, MAX(t.added_at) AS added,
-       MAX(t.last_played) AS played, SUM(t.plays) AS plays
+       MAX(us.last_played) AS played, SUM(COALESCE(us.plays, 0)) AS plays
 FROM albums a
 JOIN tracks t ON t.album_id = a.id
 LEFT JOIN covers c ON c.id = a.cover_id
+LEFT JOIN user_track_stats us ON us.track_id = t.id AND us.user_id = onde_uid()
 """
 
 def track(r) -> dict:
@@ -31,7 +34,7 @@ def track(r) -> dict:
         "albumId": r["album_id"], "album": r["album"], "albumArtist": r["album_artist"],
         "no": r["track_no"], "disc": r["disc_no"], "year": r["year"], "genre": r["genre"],
         "dur": round(r["duration"] or 0, 2), "cover": r["cover"], "color": r["color"],
-        "liked": bool(r["liked"]), "plays": r["plays"], "added": r["added_at"],
+        "liked": bool(r["liked"]), "plays": r["plays"], "popularity": r["popularity"], "added": r["added_at"],
         "ext": (r["ext"] or "").lstrip("."), "bitrate": r["bitrate"], "size": r["size"],
         "lufs": r["lufs"],
     }
@@ -102,16 +105,18 @@ def _artist_groups() -> dict[str, dict]:
     Le dictionnaire renvoyé est partagé entre les requêtes : il n'est jamais modifié après sa
     création (les appelants le lisent seulement), ce qui permet de le lire sans verrou."""
     from . import library  # import tardif : library importe ce module
-    fp = db.q1("SELECT COUNT(*) n, TOTAL(plays) p, MAX(last_played) l FROM tracks")
-    key = (library.status["gen"], fp["n"], fp["p"], fp["l"])
+    fp = db.q1("""SELECT (SELECT COUNT(*) FROM tracks) n, TOTAL(plays) p, MAX(last_played) l FROM user_track_stats
+                  WHERE user_id = onde_uid()""")
+    key = (library.status["gen"], db.current_uid.get(), fp["n"], fp["p"], fp["l"])  # (écoutes propres à chaque profil)
     with _cache_lock:
         if _artist_cache["key"] == key:
             return _artist_cache["groups"]
     # calcul hors verrou ; si deux requêtes le font en même temps, elles obtiennent le même résultat
     groups: dict[str, dict] = {}
-    rows = db.q("""SELECT t.id, t.artist, a.artist AS aartist, t.plays, t.last_played,
+    rows = db.q("""SELECT t.id, t.artist, a.artist AS aartist, us.plays, us.last_played,
                           COALESCE(t.cover_id, a.cover_id) AS cover
-                   FROM tracks t JOIN albums a ON a.id = t.album_id""")
+                   FROM tracks t JOIN albums a ON a.id = t.album_id
+                   LEFT JOIN user_track_stats us ON us.track_id = t.id AND us.user_id = onde_uid()""")
     for r in rows:
         for name in {r["artist"], r["aartist"]}:
             if not name:

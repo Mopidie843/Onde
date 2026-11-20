@@ -58,6 +58,8 @@ class PiPlayer:
         self.repeat = "off"
         self.auto_from = -1       # index du premier titre ajouté par la lecture automatique
         self.pending_seek: float | None = None
+        self.owner_uid = 1        # profil qui a lancé la file : ses écoutes à lui sont comptées (pas toujours l'admin)
+        self._counted = True      # écoute du titre chargé déjà comptée ? (une fois, après 30 s ou la moitié du titre)
         self.errors_in_row = 0
         self.sleep_at: float | None = None   # time.monotonic() de l'arrêt programmé
         self.sleep_end = False               # arrêt à la fin du titre en cours
@@ -169,6 +171,25 @@ class PiPlayer:
                 self.paused = True
         self.broadcast()
 
+    def _count_play(self) -> None:
+        """Une écoute compte après 30 s (ou la moitié d'un titre court), comme sur le web, pour le profil
+        qui a lancé la file."""
+        if self._counted or self.paused or not self.loaded:
+            return
+        if self.position < min(30.0, (self.duration or 60.0) / 2):
+            return
+        self._counted = True
+        tid = self.current_id()
+        if not tid:
+            return
+        token = db.current_uid.set(self.owner_uid)
+        try:
+            library.record_play(tid, "pi")
+        except Exception:
+            log.exception("historique")
+        finally:
+            db.current_uid.reset(token)
+
     def _on_message(self, m: dict) -> None:
         event = m.get("event")
         if event == "property-change":
@@ -177,6 +198,7 @@ class PiPlayer:
                 if data is not None:
                     self.position = float(data)
                     self._check_sleep()
+                    self._count_play()
                 return
             if name == "pause":
                 self.paused = bool(data)
@@ -191,11 +213,6 @@ class PiPlayer:
                     self._send(["seek", self.pending_seek, "absolute"])
                     self.pending_seek = None
                 tid = self.current_id()
-            if tid and not self.paused:
-                try:
-                    library.record_play(tid, "pi")
-                except Exception:
-                    log.exception("historique")
             self.broadcast()
         elif event == "end-file":
             reason = m.get("reason")
@@ -279,6 +296,7 @@ class PiPlayer:
             return
         self.position = position
         self.duration = row["duration"] or 0
+        self._counted = False
         self.pending_seek = position if position > 0.5 else None
         self.loaded = False
         self._update_gain(tid)
@@ -323,6 +341,8 @@ class PiPlayer:
     # ------------------------------------------------------------ commandes
     def command(self, action: str, p: dict) -> dict:
         with self.lock:
+            if action in ("set_queue", "play", "jump"):
+                self.owner_uid = db.current_uid.get()  # (le contexte de la requête : qui lance la lecture)
             if action == "set_queue":
                 ids = [int(i) for i in p.get("ids", [])]
                 index = int(p.get("index", 0))

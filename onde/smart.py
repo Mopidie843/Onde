@@ -26,10 +26,10 @@ FIELDS: dict[str, tuple[str, str, str]] = {
     "album": ("text", "a.name", "Album"),
     "genre": ("text", "t.genre", "Genre"),
     "year": ("number", "COALESCE(t.year, a.year)", "Année"),
-    "plays": ("number", "t.plays", "Écoutes"),
+    "plays": ("number", "COALESCE(us.plays, 0)", "Mes écoutes"),
     "duration": ("number", "t.duration", "Durée"),
     "added": ("date", "t.added_at", "Ajouté"),
-    "played": ("date", "t.last_played", "Dernière écoute"),
+    "played": ("date", "us.last_played", "Ma dernière écoute"),
     "liked": ("bool", "(l.track_id IS NOT NULL)", "Liké"),
     "format": ("enum", "LOWER(LTRIM(COALESCE(t.ext, ''), '.'))", "Format"),
 }
@@ -42,9 +42,9 @@ OPS: dict[str, set[str]] = {
 }
 SORTS: dict[str, str | None] = {
     "random": None,  # aléatoire, mais stable toute la semaine
-    "plays": "t.plays DESC, t.last_played DESC",
+    "plays": "COALESCE(us.plays, 0) DESC, us.last_played DESC",
     "added": "t.added_at DESC",
-    "played": "t.last_played DESC",
+    "played": "us.last_played DESC",
     "title": "t.title COLLATE NOCASE",
     "artist": "t.artist COLLATE NOCASE, a.name COLLATE NOCASE, t.disc_no, t.track_no",
     "year": "COALESCE(t.year, a.year) DESC, a.name COLLATE NOCASE, t.disc_no, t.track_no",

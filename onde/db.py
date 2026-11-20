@@ -93,6 +93,14 @@ CREATE TABLE IF NOT EXISTS plays(
 );
 CREATE INDEX IF NOT EXISTS ix_plays_time ON plays(played_at);
 CREATE INDEX IF NOT EXISTS ix_plays_track ON plays(track_id);
+CREATE TABLE IF NOT EXISTS user_track_stats(
+    user_id INT NOT NULL,
+    track_id INT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    plays INT NOT NULL DEFAULT 0,
+    last_played REAL,
+    PRIMARY KEY(user_id, track_id)
+);
+CREATE INDEX IF NOT EXISTS ix_uts_last ON user_track_stats(user_id, last_played);
 CREATE TABLE IF NOT EXISTS lyrics(
     track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
     synced TEXT,
@@ -279,6 +287,12 @@ def init() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS ix_tracks_added_by ON tracks(added_by)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_user ON notifications(user_id, id)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_playlists_owner ON playlists(owner_id)")
+    if not conn.execute("SELECT 1 FROM meta WHERE k='migr:user_track_stats'").fetchone():  # écoutes propres à chaque profil
+        with conn:
+            conn.execute("""INSERT OR IGNORE INTO user_track_stats(user_id, track_id, plays, last_played)
+                            SELECT user_id, track_id, COUNT(*), MAX(played_at) FROM plays WHERE user_id > 0
+                            GROUP BY user_id, track_id""")
+            conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('migr:user_track_stats', '1')")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_smart_owner ON smart_playlists(owner_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_tracks_genre ON tracks(genre COLLATE NOCASE)")
     from . import users  # (import ici : users utilise db)

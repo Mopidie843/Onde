@@ -844,7 +844,7 @@ def home():
     return J({
         "recentAlbums": M.albums(order="added DESC", limit=14),
         "recentlyPlayed": M.albums(having="played IS NOT NULL", order="played DESC", limit=14),
-        "topTracks": M.tracks("t.plays > 0", order="t.plays DESC, t.last_played DESC", limit=10),
+        "topTracks": M.tracks("us.plays > 0", order="us.plays DESC, us.last_played DESC", limit=10),
         "randomAlbums": M.albums("a.name <> ?", config.SINGLES, order="RANDOM()", limit=14),
         "artists": M.artists(order="plays", limit=14),
         "playlists": M.playlist_summary(),
@@ -855,7 +855,7 @@ def home():
 
 TRACK_SORTS = {
     "added": "t.added_at DESC", "title": "t.title COLLATE NOCASE", "artist": "t.artist COLLATE NOCASE, a.name COLLATE NOCASE, t.track_no",
-    "album": "a.name COLLATE NOCASE, t.disc_no, t.track_no", "plays": "t.plays DESC, t.last_played DESC",
+    "album": "a.name COLLATE NOCASE, t.disc_no, t.track_no", "plays": "us.plays DESC, us.last_played DESC",
     "duration": "t.duration DESC",
 }
 

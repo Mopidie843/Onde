@@ -30,10 +30,11 @@ def _catalog() -> list[dict]:
             return _cache["rows"]
         epoch = _cache["epoch"]
     rows = db.q("""SELECT t.id, t.artist, a.artist AS aartist, t.genre, COALESCE(t.year, a.year) AS year,
-                          t.plays, t.last_played, t.album_id, (l.track_id IS NOT NULL) AS liked,
+                          us.plays, us.last_played, t.plays AS pop, t.album_id, (l.track_id IS NOT NULL) AS liked,
                           COALESCE(t.cover_id, a.cover_id) AS cover
                    FROM tracks t JOIN albums a ON a.id = t.album_id
-                   LEFT JOIN likes l ON l.track_id = t.id AND l.user_id = onde_uid()""")
+                   LEFT JOIN likes l ON l.track_id = t.id AND l.user_id = onde_uid()
+                   LEFT JOIN user_track_stats us ON us.track_id = t.id AND us.user_id = onde_uid()""")
     fresh = [{
         "id": r["id"], "artist": db.norm(r["artist"]), "aartist": db.norm(r["aartist"]),
         "artist_name": r["artist"], "genre": db.norm(r["genre"]), "year": r["year"],

@@ -846,6 +846,10 @@ def record_play(track_id: int, source: str = "web", at: float | None = None) -> 
              when, track_id)
         db.x("INSERT INTO plays(track_id, played_at, seconds, source, user_id) VALUES(?,?,?,?,onde_uid())",
              track_id, when, row["duration"] or 0, source)
+        # écoutes propres au profil (accueil, mixes, playlists intelligentes) ; tracks.plays reste la « popularité » de la maison
+        db.x("""INSERT INTO user_track_stats(user_id, track_id, plays, last_played) VALUES(onde_uid(), ?, 1, ?)
+                ON CONFLICT(user_id, track_id) DO UPDATE SET plays = plays + 1,
+                    last_played = MAX(COALESCE(last_played, 0), excluded.last_played)""", track_id, when)
 
 
 # --------------------------------------------------------------------------- #
